@@ -1,4 +1,4 @@
-# Manual Alignment Tool for Imaging Sessions
+# TIFFAlign: Manual Alignment Across Imaging Sessions
 
 This repository provides a **PyQt5-based GUI** for manually aligning one-photon / two-photon imaging sessions (`.sbx` or `.tiff` files). It allows interactive adjustment of **x/y shifts, rotation, and transparency**, and can save aligned data into a single TIFF stack.
 
@@ -72,7 +72,6 @@ python tiff_manual_alignment_tool.py
    - By default, files are read using `memmap` for efficiency.  
    - If `memmap` fails, the tool falls back to `imread`, which loads the entire file into memory.  
    - ⚠️ Ensure your computer has enough RAM to handle large files. 
-
 
 ---
 

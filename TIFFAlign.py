@@ -222,7 +222,7 @@ class SaveThread(QThread):
 class AlignGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Tiff Manual Alignment Tool')
+        self.setWindowTitle('TIFFAlign')
         self.setGeometry(300, 150, 900, 1200)
         self.session_idx = 0
         self.ref_idx = 0
