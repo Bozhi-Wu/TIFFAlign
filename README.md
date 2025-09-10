@@ -28,7 +28,7 @@ Although many excellent automated motion correction algorithms exist, they are g
 Clone this repository and install dependencies:
 
 ```bash
-git clone https://github.com/Bozhi-Wu/tiff_manual_alignment_tool.git
+git clone https://github.com/Bozhi-Wu/TIFFAlign.git
 ```
 - Python 3.8+
 - PyQt5
@@ -51,7 +51,7 @@ pip install pyqt5 numpy scipy matplotlib tifffile tqdm
 Run the GUI:
 
 ```bash
-python tiff_manual_alignment_tool.py
+python TIFFAlign.py
 ```
 1. Choose the **File Extension** (`sbx` or `tiff`).
 2. Select a **Folder** containing `.sbx` or `.tif`/`.tiff` files. 
