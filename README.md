@@ -4,7 +4,7 @@ This repository provides a **PyQt5-based GUI** for manually aligning one-photon 
 
 Although many excellent automated motion correction algorithms exist, they are generally optimized for **within-session motion artifacts**. When working with **multiple sessions concatenated together**, shifts or rotations often occur between sessions. In these cases, we found that a manual **pre-alignment** step produces better results before applying automated motion correction. This little GUI was developed to streamline that process.
 
-![GUI Screenshot](GUI_sample.png)
+![GUI Screenshot](preview/GUI_sample.png)
 
 ---
 
