@@ -85,7 +85,7 @@ class DataLoaderThread(QThread):
                 
             self.status_updated.emit(f"Processing {len(files)} files...")
             mean_frames = []
-            n_sections = 0
+            n_sessions = 0
             n_total_frames = 0
             
             for i, file in enumerate(files):
@@ -98,7 +98,7 @@ class DataLoaderThread(QThread):
                     frames, total_frames = load_tiff_optimized(file.as_posix(), self.n_frames_averaged)
                 
                 n_total_frames += total_frames
-                n_sections += 1
+                n_sessions += 1
                 
                 # Calculate mean frame
                 mean_frame = np.mean(frames, axis=0)
@@ -110,7 +110,7 @@ class DataLoaderThread(QThread):
             
             result = {
                 'mean_frames': mean_frames,
-                'n_sections': n_sections,
+                'n_sessions': n_sessions,
                 'n_total_frames': n_total_frames
             }
             
@@ -218,14 +218,14 @@ class SaveThread(QThread):
 class AlignGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Manual Alignment Tool')
+        self.setWindowTitle('Tiff Manual Alignment Tool')
         self.setGeometry(300, 150, 900, 1200)
-        self.section_idx = 0
+        self.session_idx = 0
         self.ref_idx = 0
         self.alpha = 0.5
         self.exten = "*.sbx"
         self.mean_frames = None
-        self.n_sections = 0
+        self.n_sessions = 0
         self.n_total_frames = 0
         self.params_all = {}
         self.loading_thread = None
@@ -261,11 +261,11 @@ class AlignGUI(QWidget):
 
         # Reference selector
         self.ref_selector = QComboBox()
-        add_row("Reference Section:", self.ref_selector)
+        add_row("Reference Session:", self.ref_selector)
 
-        # Moving section selector
-        self.section_selector = QComboBox()
-        add_row("Moving Section:", self.section_selector)
+        # Moving session selector
+        self.session_selector = QComboBox()
+        add_row("Moving Session:", self.session_selector)
 
         # --- Sliders ---
         self.x_label, self.x_slider = self.create_slider("X Shift", -50, 50, 0, sliders_layout)
@@ -376,7 +376,7 @@ class AlignGUI(QWidget):
         self.save_params_button.setEnabled(enable)
         self.load_params_button.setEnabled(enable)
         self.ref_selector.setEnabled(enable)
-        self.section_selector.setEnabled(enable)
+        self.session_selector.setEnabled(enable)
 
     # ------------------- Folder / SBX Loading -------------------
     def select_folder(self):
@@ -401,7 +401,7 @@ class AlignGUI(QWidget):
                 with open(self.pickle_path, 'rb') as f:
                     data = pickle.load(f)
                     self.mean_frames = data['mean_frames']
-                    self.n_sections = data['n_sections']
+                    self.n_sessions = data['n_sessions']
                     self.n_total_frames = data['n_total_frames']
                 self.finish_data_loading()
             except Exception as e:
@@ -438,13 +438,13 @@ class AlignGUI(QWidget):
             
         # Store the loaded data
         self.mean_frames = result['mean_frames']
-        self.n_sections = result['n_sections']
+        self.n_sessions = result['n_sessions']
         self.n_total_frames = result['n_total_frames']
         
         # Save to pickle for future use
         data = {
             'mean_frames': self.mean_frames,
-            'n_sections': self.n_sections,
+            'n_sessions': self.n_sessions,
             'n_total_frames': self.n_total_frames
         }
         
@@ -460,34 +460,34 @@ class AlignGUI(QWidget):
     def finish_data_loading(self):
         """Complete the data loading process"""
         # Prepare params_all
-        self.params_all = {i: {'x_shift': 0, 'y_shift': 0, 'rotation': 0} for i in range(self.n_sections)}
+        self.params_all = {i: {'x_shift': 0, 'y_shift': 0, 'rotation': 0} for i in range(self.n_sessions)}
 
         # Update selectors
-        self.section_selector.clear()
-        self.section_selector.addItems([f"Section {i}" for i in range(self.n_sections)])
+        self.session_selector.clear()
+        self.session_selector.addItems([f"Session {i}" for i in range(self.n_sessions)])
         self.ref_selector.clear()
-        self.ref_selector.addItems([f"Section {i}" for i in range(self.n_sections)])
+        self.ref_selector.addItems([f"Session {i}" for i in range(self.n_sessions)])
 
         # Reconnect signals
-        self.section_selector.currentIndexChanged.connect(self.change_section)
+        self.session_selector.currentIndexChanged.connect(self.change_session)
         self.ref_selector.currentIndexChanged.connect(self.change_reference)
 
         # Set defaults
-        self.section_idx = 0
+        self.session_idx = 0
         self.ref_idx = 0
-        self.section_selector.setCurrentIndex(self.section_idx)
+        self.session_selector.setCurrentIndex(self.session_idx)
         self.ref_selector.setCurrentIndex(self.ref_idx)
 
         # Enable sliders and buttons
         self.enable_controls(True)
-        self.status_label.setText(f"Ready - {self.n_sections} sections loaded")
+        self.status_label.setText(f"Ready - {self.n_sessions} sessions loaded")
         self.update_image()
 
-    # ------------------- Section Changes -------------------
-    def change_section(self, idx):
-        self.section_idx = idx
-        # Get parameters for this section, default to zeros
-        params = self.params_all.get(self.section_idx, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
+    # ------------------- Session Changes -------------------
+    def change_session(self, idx):
+        self.session_idx = idx
+        # Get parameters for this session, default to zeros
+        params = self.params_all.get(self.session_idx, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
         # Update sliders to match stored parameters
         self.x_slider.setValue(params['x_shift'])
         self.y_slider.setValue(params['y_shift'])
@@ -520,8 +520,8 @@ class AlignGUI(QWidget):
         rotation = self.rot_slider.value() / 10
         alpha = self.alpha_slider.value() / 100.0
 
-        # Update params_all for current section
-        self.params_all[self.section_idx] = {
+        # Update params_all for current session
+        self.params_all[self.session_idx] = {
             'x_shift': x_shift,
             'y_shift': y_shift,
             'rotation': rotation
@@ -529,7 +529,7 @@ class AlignGUI(QWidget):
 
         # Get images
         ref_img = self.mean_frames[self.ref_idx]
-        target_img = self.mean_frames[self.section_idx]
+        target_img = self.mean_frames[self.session_idx]
 
         # Apply rotation & shift
         rotated = rotate(target_img, rotation, reshape=False, order=0)
@@ -560,7 +560,7 @@ class AlignGUI(QWidget):
         self.progress_bar.setVisible(False)
         self.enable_controls(True)
         if success:
-            self.status_label.setText(f"{message} ({self.n_sections} sections)")
+            self.status_label.setText(f"{message} ({self.n_sessions} sessions)")
             print(message)
         else:
             self.status_label.setText(message)
@@ -579,8 +579,8 @@ class AlignGUI(QWidget):
             with open(self.params_path, 'rb') as f:
                 self.params_all = pickle.load(f)
             print(f"Loaded alignment parameters from {self.params_path}")
-            # Update sliders and image for current section
-            self.change_section(self.section_idx)
+            # Update sliders and image for current session
+            self.change_session(self.session_idx)
         else:
             print("No saved parameters found.")
 
