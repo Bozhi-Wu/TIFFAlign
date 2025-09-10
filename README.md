@@ -38,7 +38,7 @@ git clone https://github.com/Bozhi-Wu/tiff_manual_alignment_tool.git
 - tifffile
 - tqdm
 
-You can install them directly:
+You can install them directly using either `conda` or `pip`:
 
 ```bash
 pip install pyqt5 numpy scipy matplotlib tifffile tqdm
@@ -68,7 +68,11 @@ python tiff_manual_alignment_tool.py
    - Rotation
    - Alpha (transparency)
 5. Save alignment parameters for later use.
-6. Export the aligned file with `Save Aligned TIFF`.
+6. Export the aligned file with **Save Aligned TIFF**.  
+   - By default, files are read using `memmap` for efficiency.  
+   - If `memmap` fails, the tool falls back to `imread`, which loads the entire file into memory.  
+   - ⚠️ Ensure your computer has enough RAM to handle large files. 
+
 
 ---
 
