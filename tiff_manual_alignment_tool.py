@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import shift, rotate
 from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from tifffile import TiffWriter, memmap, TiffFile
+from tifffile import TiffWriter, memmap, TiffFile, imread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QFileDialog, QProgressBar, QSizePolicy
 
@@ -183,7 +183,11 @@ class SaveThread(QThread):
                         fpath = file.as_posix().split('.')[0]
                         frames = sbx_to_frames(fpath)
                     else:  # *.tiff
-                        frames = memmap(file.as_posix())
+                        try:
+                            frames = memmap(file.as_posix())
+                        except:
+                            self.status_updated.emit(f"Cannot use memory mapping, reading directly to memory instead.")
+                            frames = imread(file.as_posix())
 
                     params = self.params_all.get(nn, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
 
