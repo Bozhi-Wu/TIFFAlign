@@ -3,7 +3,6 @@ import sys
 import scipy
 import pickle
 import numpy as np
-from tqdm import tqdm
 from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.ndimage import shift, rotate

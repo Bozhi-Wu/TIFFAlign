@@ -39,7 +39,7 @@ conda activate tiffalign
 
 ### 3. Install dependencies
 ```bash
-conda install pyqt=5 numpy=1.24 scipy=1.14 tifffile=2023 matplotlib tqdm -c conda-forge
+conda install pyqt=5 numpy=1.24 scipy=1.14 tifffile=2023 matplotlib -c conda-forge
 ```
 
 ---
