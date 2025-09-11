@@ -25,18 +25,6 @@ Although many excellent automated motion correction algorithms exist, they are g
 
 ## Requirements and Installation
 
-It is recommended to create a fresh environment to avoid conflicts with existing packages.  
-That said, the required packages are fairly standard, so you may also be able to run this in an existing environment.
-
-### Requirements
-- Python 3.9+  
-- PyQt5  
-- numpy  
-- scipy  
-- matplotlib  
-- tifffile  
-- tqdm  
-
 ### 1. Clone this repository
 ```bash
 git clone https://github.com/Bozhi-Wu/TIFFAlign.git
