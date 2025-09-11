@@ -45,13 +45,13 @@ cd TIFFAlign
 
 ### 2. Create and activate a conda environment
 ```bash
-conda create -n tiffalign python=3.9 -y
+conda create -n tiffalign python=3.11
 conda activate tiffalign
 ```
 
 ### 3. Install dependencies
 ```bash
-conda install pyqt numpy scipy matplotlib tifffile tqdm -c conda-forge
+conda install pyqt=5 numpy=1.24 scipy=1.14 tifffile=2023 matplotlib tqdm -c conda-forge
 ```
 
 ---
