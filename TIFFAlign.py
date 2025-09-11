@@ -51,12 +51,16 @@ def load_tiff_optimized(filepath, max_frames=100):
         n_frames = len(tif.pages)
         n_frames_to_load = min(n_frames, max_frames)
         
+        # Detect data type from first frame
+        first_frame = tif.pages[0].asarray()
+        dtype = first_frame.dtype
+        
         # Load only the first max_frames
         frames = []
         for i in range(n_frames_to_load):
             frames.append(tif.pages[i].asarray())
         
-        return np.array(frames), n_frames
+        return np.array(frames), n_frames, dtype
 
 # --- Background Loading Thread ---
 class DataLoaderThread(QThread):
@@ -69,6 +73,7 @@ class DataLoaderThread(QThread):
         self.folderpath = folderpath
         self.exten = exten
         self.n_frames_averaged = n_frames_averaged
+        self.detected_dtype = None
         
     def run(self):
         try:
@@ -94,8 +99,14 @@ class DataLoaderThread(QThread):
                 if self.exten == "*.sbx":
                     fpath = file.as_posix().split('.')[0]
                     frames, total_frames = sbx_to_frames_optimized(fpath, self.n_frames_averaged)
+                    # SBX files are always uint16
+                    if self.detected_dtype is None:
+                        self.detected_dtype = np.uint16
                 elif self.exten == "*.tiff":
-                    frames, total_frames = load_tiff_optimized(file.as_posix(), self.n_frames_averaged)
+                    frames, total_frames, dtype = load_tiff_optimized(file.as_posix(), self.n_frames_averaged)
+                    # Store the detected data type (should be consistent across all TIFF files)
+                    if self.detected_dtype is None:
+                        self.detected_dtype = dtype
                 
                 n_total_frames += total_frames
                 n_sessions += 1
@@ -111,7 +122,8 @@ class DataLoaderThread(QThread):
             result = {
                 'mean_frames': mean_frames,
                 'n_sessions': n_sessions,
-                'n_total_frames': n_total_frames
+                'n_total_frames': n_total_frames,
+                'detected_dtype': self.detected_dtype
             }
             
             self.loading_finished.emit(result)
@@ -127,13 +139,14 @@ class SaveThread(QThread):
     status_updated = pyqtSignal(str)
     saving_finished = pyqtSignal(bool, str)
 
-    def __init__(self, folderpath, exten, params_all, ref_idx, savepath):
+    def __init__(self, folderpath, exten, params_all, ref_idx, savepath, detected_dtype):
         super().__init__()
         self.folderpath = folderpath
         self.exten = exten
         self.params_all = params_all
         self.ref_idx = ref_idx
         self.savepath = savepath
+        self.detected_dtype = detected_dtype
 
     def run(self):
         try:
@@ -189,7 +202,7 @@ class SaveThread(QThread):
                             self.status_updated.emit(f"Cannot use memory mapping, reading directly to memory instead.")
                             frames = imread(file.as_posix())
 
-                    params = self.params_all.get(nn, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
+                    params = self.params_all['sessions'].get(nn, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
 
                     chunk_size = 1000
                     for i in range(0, frames.shape[0], chunk_size):
@@ -200,9 +213,9 @@ class SaveThread(QThread):
                             if nn != self.ref_idx:
                                 rotated = rotate(frame, params['rotation'], reshape=False, order=0)
                                 frame = shift(rotated, [params['y_shift'], params['x_shift']], order=0)
-                            tiff_writer.write(frame.astype(np.uint16))
+                            tiff_writer.write(frame.astype(self.detected_dtype))
 
-                            # Update progress per frame
+                            # Update progress
                             frames_done += 1
                             # Avoid excessive signal emissions by batching a bit
                             if total_frames > 0 and frames_done % 50 == 0:
@@ -231,6 +244,7 @@ class AlignGUI(QWidget):
         self.mean_frames = None
         self.n_sessions = 0
         self.n_total_frames = 0
+        self.detected_dtype = np.uint16  # Default to uint16
         self.params_all = {}
         self.loading_thread = None
         self.save_thread = None
@@ -407,6 +421,8 @@ class AlignGUI(QWidget):
                     self.mean_frames = data['mean_frames']
                     self.n_sessions = data['n_sessions']
                     self.n_total_frames = data['n_total_frames']
+                    # Load detected data type if available, otherwise use default
+                    self.detected_dtype = data.get('detected_dtype', np.uint16)
                 self.finish_data_loading()
             except Exception as e:
                 print(f"Error loading pickle: {e}")
@@ -444,12 +460,14 @@ class AlignGUI(QWidget):
         self.mean_frames = result['mean_frames']
         self.n_sessions = result['n_sessions']
         self.n_total_frames = result['n_total_frames']
+        self.detected_dtype = result['detected_dtype']
         
         # Save to pickle for future use
         data = {
             'mean_frames': self.mean_frames,
             'n_sessions': self.n_sessions,
-            'n_total_frames': self.n_total_frames
+            'n_total_frames': self.n_total_frames,
+            'detected_dtype': self.detected_dtype
         }
         
         try:
@@ -463,8 +481,11 @@ class AlignGUI(QWidget):
     
     def finish_data_loading(self):
         """Complete the data loading process"""
-        # Prepare params_all
-        self.params_all = {i: {'x_shift': 0, 'y_shift': 0, 'rotation': 0} for i in range(self.n_sessions)}
+        # Prepare params_all with reference session info
+        self.params_all = {
+            'reference_session': 0,  # Default reference session
+            'sessions': {i: {'x_shift': 0, 'y_shift': 0, 'rotation': 0} for i in range(self.n_sessions)}
+        }
 
         # Update selectors
         self.session_selector.clear()
@@ -479,19 +500,33 @@ class AlignGUI(QWidget):
         # Set defaults
         self.session_idx = 0
         self.ref_idx = 0
-        self.session_selector.setCurrentIndex(self.session_idx)
         self.ref_selector.setCurrentIndex(self.ref_idx)
+        
+        # Update moving session selector to exclude reference session
+        self.update_moving_session_selector()
 
         # Enable sliders and buttons
         self.enable_controls(True)
-        self.status_label.setText(f"Ready - {self.n_sessions} sessions loaded")
+        
+        # Load saved parameters if they exist
+        self.load_params()
+        
+        self.status_label.setText(f"Ready - {self.n_sessions} sessions loaded (data type: {self.detected_dtype})")
         self.update_image()
 
     # ------------------- Session Changes -------------------
-    def change_session(self, idx):
-        self.session_idx = idx
+    def change_session(self, selector_idx):
+        # Convert selector index to actual session index
+        # The selector only shows sessions that are not the reference session
+        available_sessions = [i for i in range(self.n_sessions) if i != self.ref_idx]
+        if selector_idx < len(available_sessions):
+            self.session_idx = available_sessions[selector_idx]
+        else:
+            # Fallback - shouldn't happen with proper UI management
+            self.session_idx = 0
+            
         # Get parameters for this session, default to zeros
-        params = self.params_all.get(self.session_idx, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
+        params = self.params_all['sessions'].get(self.session_idx, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
         # Update sliders to match stored parameters
         self.x_slider.setValue(params['x_shift'])
         self.y_slider.setValue(params['y_shift'])
@@ -504,8 +539,47 @@ class AlignGUI(QWidget):
         # Refresh image
         self.update_image()
 
+    def update_moving_session_selector(self):
+        """Update the moving session selector to exclude the reference session"""
+        if not hasattr(self, 'session_selector') or not hasattr(self, 'ref_selector'):
+            return
+            
+        # Store current selection
+        current_selection = self.session_selector.currentIndex()
+        
+        # Clear and repopulate with all sessions except reference
+        self.session_selector.clear()
+        available_sessions = []
+        for i in range(self.n_sessions):
+            if i != self.ref_idx:
+                available_sessions.append(i)
+                self.session_selector.addItem(f"Session {i}")
+        
+        # If current selection was the reference session, switch to first available
+        if current_selection == self.ref_idx or current_selection not in available_sessions:
+            if available_sessions:
+                self.session_idx = available_sessions[0]
+                self.session_selector.setCurrentIndex(0)
+            else:
+                # This shouldn't happen, but handle gracefully
+                self.session_idx = 0
+        else:
+            # Find the new index for the previously selected session
+            try:
+                new_index = available_sessions.index(current_selection)
+                self.session_idx = current_selection
+                self.session_selector.setCurrentIndex(new_index)
+            except ValueError:
+                # Fallback to first available
+                self.session_idx = available_sessions[0]
+                self.session_selector.setCurrentIndex(0)
+
     def change_reference(self, idx):
         self.ref_idx = idx
+        # Update the stored reference session
+        self.params_all['reference_session'] = idx
+        # Update moving session selector to exclude reference session
+        self.update_moving_session_selector()
         if self.mean_frames is not None:
             self.update_image()
             
@@ -525,7 +599,7 @@ class AlignGUI(QWidget):
         alpha = self.alpha_slider.value() / 100.0
 
         # Update params_all for current session
-        self.params_all[self.session_idx] = {
+        self.params_all['sessions'][self.session_idx] = {
             'x_shift': x_shift,
             'y_shift': y_shift,
             'rotation': rotation
@@ -554,7 +628,7 @@ class AlignGUI(QWidget):
         self.enable_controls(False)
 
         # Start background save thread
-        self.save_thread = SaveThread(self.folderpath, self.exten, self.params_all, self.ref_idx, self.savepath.as_posix())
+        self.save_thread = SaveThread(self.folderpath, self.exten, self.params_all, self.ref_idx, self.savepath.as_posix(), self.detected_dtype)
         self.save_thread.progress_updated.connect(self.progress_bar.setValue)
         self.save_thread.status_updated.connect(self.status_label.setText)
         self.save_thread.saving_finished.connect(self.on_saving_finished)
@@ -574,17 +648,28 @@ class AlignGUI(QWidget):
         if hasattr(self, 'params_path'):
             if self.params_path.exists():
                 os.remove(self.params_path)
+            # Ensure reference session is up to date before saving
+            self.params_all['reference_session'] = self.ref_idx
             with open(self.params_path, 'wb') as f:
                 pickle.dump(self.params_all, f)
-            print(f"Alignment parameters saved to {self.params_path}")
+            print(f"Alignment parameters saved to {self.params_path} (reference session: {self.ref_idx})")
 
     def load_params(self):
         if hasattr(self, 'params_path') and self.params_path.exists():
             with open(self.params_path, 'rb') as f:
                 self.params_all = pickle.load(f)
-            print(f"Loaded alignment parameters from {self.params_path}")
-            # Update sliders and image for current session
-            self.change_session(self.session_idx)
+            
+            # Load reference session and update GUI
+            self.ref_idx = self.params_all['reference_session']
+            print(f"Loaded alignment parameters from {self.params_path} (reference session: {self.ref_idx})")
+            
+            # Update GUI selectors
+            if hasattr(self, 'ref_selector') and hasattr(self, 'session_selector'):
+                self.ref_selector.setCurrentIndex(self.ref_idx)
+                # Update moving session selector to exclude reference session
+                self.update_moving_session_selector()
+                # Update sliders and image for current session
+                self.change_session(0)  # Start with first available session
         else:
             print("No saved parameters found.")
 

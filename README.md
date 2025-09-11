@@ -25,23 +25,33 @@ Although many excellent automated motion correction algorithms exist, they are g
 
 ## Requirements and Installation
 
-Clone this repository and install dependencies:
+It is recommended to create a fresh environment to avoid conflicts with existing packages.  
+That said, the required packages are fairly standard, so you may also be able to run this in an existing environment.
 
+### Requirements
+- Python 3.9+  
+- PyQt5  
+- numpy  
+- scipy  
+- matplotlib  
+- tifffile  
+- tqdm  
+
+### 1. Clone this repository
 ```bash
 git clone https://github.com/Bozhi-Wu/TIFFAlign.git
+cd TIFFAlign
 ```
-- Python 3.8+
-- PyQt5
-- numpy
-- scipy
-- matplotlib
-- tifffile
-- tqdm
 
-You can install them directly using either `conda` or `pip`:
-
+### 2. Create and activate a conda environment
 ```bash
-pip install pyqt5 numpy scipy matplotlib tifffile tqdm
+conda create -n tiffalign python=3.9 -y
+conda activate tiffalign
+```
+
+### 3. Install dependencies
+```bash
+conda install pyqt numpy scipy matplotlib tifffile tqdm -c conda-forge
 ```
 
 ---
@@ -58,20 +68,23 @@ python TIFFAlign.py
    - The files can exist in subfolders as `rglob` is used to find the files.
    - For the sessions to be concatenated in the correct order, please name the files so that they can be easily sorted with the python `sorted` function.
    - For `.sbx` files, the corresponding `.mat` metadata files are also required.
-   - For the very first time, it will read and compute and **mean frames** for the first 100 frames of each session. These will be cached into `mean_frames.pkl` for future reload.
+   - For the very first time, it will read and compute and mean frames for the first 100 frames of each session. These will be cached into `mean_frames.pkl` for future reload.
    - If there is an existing alignment parameter file `params_all.pkl` in the folder, it will be automatically loaded.
-3. Pick a **reference session** and a **moving session**.
-   - After picking the reference session, please only align the other sessions to the reference, without adjust the reference session itself. During the saving process, no adjustment will be made to the reference session. 
-4. Adjust alignment using the **sliders**:
+3. Pick a **Reference Session** and a **Moving Session**.
+   - The reference session is shown in grayscale, while the moving session is overlaid using the *inferno* colormap.  
+   - Use the alpha slider to adjust transparency and better visualize the alignment.  
+   - When saving, the reference session remains unchanged; only the moving session is adjusted.  
+4. Adjust alignment using the **Sliders**:
    - X Shift
    - Y Shift
    - Rotation
    - Alpha (transparency)
 5. Save alignment parameters for later use.
 6. Export the aligned file with **Save Aligned TIFF**.  
-   - By default, files are read using `memmap` for efficiency.  
-   - If `memmap` fails, the tool falls back to `imread`, which loads the entire file into memory.  
-   - ⚠️ Ensure your computer has enough RAM to handle large files. 
+   - Files are read using `memmap` by default for efficiency.  
+   - The output TIFF is written using the detected data type of the original files (for `.sbx` files, `uint16` is used).  
+   - If `memmap` fails, the tool automatically falls back to `imread`, which loads the entire file into memory.  
+   - ⚠️ Make sure your computer has enough available RAM when working with large files.  
 
 ---
 
