@@ -5,12 +5,12 @@ import pickle
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
-from scipy.ndimage import shift, rotate
 from PyQt5.QtGui import QPalette, QColor
+from scipy.ndimage import shift, rotate, zoom
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from tifffile import TiffWriter, memmap, TiffFile, imread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QFileDialog, QProgressBar, QSizePolicy
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QFileDialog, QProgressBar, QSizePolicy, QLineEdit
 
 # --- Helper functions for loading SBX ---
 def loadmat(matfile):
@@ -201,7 +201,7 @@ class SaveThread(QThread):
                             self.status_updated.emit(f"Cannot use memory mapping, reading directly to memory instead.")
                             frames = imread(file.as_posix())
 
-                    params = self.params_all['sessions'].get(nn, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
+                    params = self.params_all['sessions'].get(nn, {'x_shift': 0, 'y_shift': 0, 'rotation': 0, 'scale': 1.0})
 
                     chunk_size = 1000
                     for i in range(0, frames.shape[0], chunk_size):
@@ -210,6 +210,29 @@ class SaveThread(QThread):
 
                         for frame in chunk:
                             if nn != self.ref_idx:
+                                # Apply scaling
+                                if params['scale'] != 1.0:
+                                    scaled = zoom(frame, params['scale'], order=0)
+                                    # Crop or pad to match original size
+                                    if params['scale'] > 1.0:
+                                        # If scaled up, crop to center
+                                        h, w = frame.shape
+                                        sh, sw = scaled.shape
+                                        start_h = (sh - h) // 2
+                                        start_w = (sw - w) // 2
+                                        scaled = scaled[start_h:start_h+h, start_w:start_w+w]
+                                    else:
+                                        # If scaled down, pad to original size
+                                        h, w = frame.shape
+                                        sh, sw = scaled.shape
+                                        pad_h = (h - sh) // 2
+                                        pad_w = (w - sw) // 2
+                                        padded = np.zeros_like(frame)
+                                        padded[pad_h:pad_h+sh, pad_w:pad_w+sw] = scaled
+                                        scaled = padded
+                                    frame = scaled
+                                
+                                # Apply rotation and shift
                                 rotated = rotate(frame, params['rotation'], reshape=False, order=0)
                                 frame = shift(rotated, [params['y_shift'], params['x_shift']], order=0)
                             tiff_writer.write(frame.astype(self.detected_dtype))
@@ -285,10 +308,11 @@ class AlignGUI(QWidget):
         add_row("Moving Session:", self.session_selector)
 
         # --- Sliders ---
-        self.x_label, self.x_slider = self.create_slider("X Shift", -50, 50, 0, sliders_layout)
-        self.y_label, self.y_slider = self.create_slider("Y Shift", -50, 50, 0, sliders_layout)
-        self.rot_label, self.rot_slider = self.create_slider("Rotation", -100, 100, 0, sliders_layout)
-        self.alpha_label, self.alpha_slider = self.create_slider("Alpha", 0, 100, 50, sliders_layout)
+        self.x_label, self.x_slider, self.x_input = self.create_slider("X Shift", -50, 50, 0, sliders_layout)
+        self.y_label, self.y_slider, self.y_input = self.create_slider("Y Shift", -50, 50, 0, sliders_layout)
+        self.rot_label, self.rot_slider, self.rot_input = self.create_slider("Rotation", -100, 100, 0, sliders_layout)
+        self.scale_label, self.scale_slider, self.scale_input = self.create_slider("Scale", 50, 150, 100, sliders_layout)
+        self.alpha_label, self.alpha_slider, self.alpha_input = self.create_slider("Alpha", 0, 100, 50, sliders_layout)
 
         # --- Save buttons ---
         self.save_params_button = QPushButton("Save Alignment Parameters")
@@ -369,26 +393,118 @@ class AlignGUI(QWidget):
                 margin: -7px 0;
                 border-radius: 7px;
             }""")
-        slider.valueChanged.connect(lambda val, l=label, n=name: self.slider_changed(val, l, n))
+        
+        # Create text input for direct value entry
+        text_input = QLineEdit()
+        text_input.setMaximumWidth(80)
+        text_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #2b2b2b;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 2px 5px;
+                color: white;
+            }
+            QLineEdit:focus {
+                border: 1px solid #0078d4;
+            }
+        """)
+        
+        # Set initial value in text input
+        if name == "Rotation":
+            text_input.setText(f"{init_val / 10:.1f}")
+        elif name == "Alpha":
+            text_input.setText(f"{init_val / 100:.2f}")
+        elif name == "Scale":
+            text_input.setText(f"{init_val / 100:.2f}")
+        else:
+            text_input.setText(str(init_val))
+        
+        # Connect signals
+        slider.valueChanged.connect(lambda val, l=label, n=name, t=text_input: self.slider_changed(val, l, n, t))
+        text_input.returnPressed.connect(lambda t=text_input, s=slider, n=name, min_v=min_val, max_v=max_val: self.text_input_changed(t, s, n, min_v, max_v))
+        text_input.editingFinished.connect(lambda t=text_input, s=slider, n=name, min_v=min_val, max_v=max_val: self.text_input_changed(t, s, n, min_v, max_v))
+        
+        # Create horizontal layout for slider and text input
+        slider_layout = QHBoxLayout()
+        slider_layout.addWidget(slider, 1)
+        slider_layout.addWidget(text_input, 0)
+        
         layout.addWidget(label)
-        layout.addWidget(slider)
-        return label, slider
+        layout.addLayout(slider_layout)
+        return label, slider, text_input
 
-    def slider_changed(self, value, label, name):
+    def slider_changed(self, value, label, name, text_input=None):
         if name == "Rotation":
             label.setText(f"{name}: {value / 10:.1f}")
+            if text_input:
+                text_input.setText(f"{value / 10:.1f}")
         elif name == "Alpha":
             label.setText(f"{name}: {value / 100:.2f}")
+            if text_input:
+                text_input.setText(f"{value / 100:.2f}")
+        elif name == "Scale":
+            label.setText(f"{name}: {value / 100:.2f}x")
+            if text_input:
+                text_input.setText(f"{value / 100:.2f}")
         else:
             label.setText(f"{name}: {value}")
+            if text_input:
+                text_input.setText(str(value))
         if self.mean_frames is not None:
             self.update_image()
+
+    def text_input_changed(self, text_input, slider, name, min_val, max_val):
+        """Handle direct text input changes"""
+        try:
+            value = float(text_input.text())
+            
+            # Convert to slider scale based on parameter type
+            if name == "Rotation":
+                slider_value = int(value * 10)
+            elif name == "Alpha":
+                slider_value = int(value * 100)
+            elif name == "Scale":
+                slider_value = int(value * 100)
+            else:
+                slider_value = int(value)
+            
+            # Clamp to slider range
+            slider_value = max(min_val, min(max_val, slider_value))
+            slider.setValue(slider_value)
+            
+            # Update text input to show clamped value
+            if name == "Rotation":
+                text_input.setText(f"{slider_value / 10:.1f}")
+            elif name == "Alpha":
+                text_input.setText(f"{slider_value / 100:.2f}")
+            elif name == "Scale":
+                text_input.setText(f"{slider_value / 100:.2f}")
+            else:
+                text_input.setText(str(slider_value))
+                
+        except ValueError:
+            # If input is invalid, reset to current slider value
+            if name == "Rotation":
+                text_input.setText(f"{slider.value() / 10:.1f}")
+            elif name == "Alpha":
+                text_input.setText(f"{slider.value() / 100:.2f}")
+            elif name == "Scale":
+                text_input.setText(f"{slider.value() / 100:.2f}")
+            else:
+                text_input.setText(str(slider.value()))
 
     def enable_controls(self, enable=True):
         self.x_slider.setEnabled(enable)
         self.y_slider.setEnabled(enable)
         self.rot_slider.setEnabled(enable)
+        self.scale_slider.setEnabled(enable)
         self.alpha_slider.setEnabled(enable)
+        self.x_input.setEnabled(enable)
+        self.y_input.setEnabled(enable)
+        self.rot_input.setEnabled(enable)
+        self.scale_input.setEnabled(enable)
+        self.alpha_input.setEnabled(enable)
         self.save_button.setEnabled(enable)
         self.save_params_button.setEnabled(enable)
         self.load_params_button.setEnabled(enable)
@@ -483,7 +599,7 @@ class AlignGUI(QWidget):
         # Prepare params_all with reference session info
         self.params_all = {
             'reference_session': 0,  # Default reference session
-            'sessions': {i: {'x_shift': 0, 'y_shift': 0, 'rotation': 0} for i in range(self.n_sessions)}
+            'sessions': {i: {'x_shift': 0, 'y_shift': 0, 'rotation': 0, 'scale': 1.0} for i in range(self.n_sessions)}
         }
 
         # Update selectors
@@ -525,16 +641,18 @@ class AlignGUI(QWidget):
             self.session_idx = 0
             
         # Get parameters for this session, default to zeros
-        params = self.params_all['sessions'].get(self.session_idx, {'x_shift': 0, 'y_shift': 0, 'rotation': 0})
+        params = self.params_all['sessions'].get(self.session_idx, {'x_shift': 0, 'y_shift': 0, 'rotation': 0, 'scale': 1.0})
         # Update sliders to match stored parameters
         self.x_slider.setValue(params['x_shift'])
         self.y_slider.setValue(params['y_shift'])
         self.rot_slider.setValue(int(params['rotation'] * 10))  # slider stores 10x rotation
-        # Update slider labels
-        self.slider_changed(self.x_slider.value(), self.x_label, "X Shift")
-        self.slider_changed(self.y_slider.value(), self.y_label, "Y Shift")
-        self.slider_changed(self.rot_slider.value(), self.rot_label, "Rotation")
-        self.slider_changed(self.alpha_slider.value(), self.alpha_label, "Alpha")
+        self.scale_slider.setValue(int(params['scale'] * 100))  # slider stores 100x scale
+        # Update slider labels and text inputs
+        self.slider_changed(self.x_slider.value(), self.x_label, "X Shift", self.x_input)
+        self.slider_changed(self.y_slider.value(), self.y_label, "Y Shift", self.y_input)
+        self.slider_changed(self.rot_slider.value(), self.rot_label, "Rotation", self.rot_input)
+        self.slider_changed(self.scale_slider.value(), self.scale_label, "Scale", self.scale_input)
+        self.slider_changed(self.alpha_slider.value(), self.alpha_label, "Alpha", self.alpha_input)
         # Refresh image
         self.update_image()
 
@@ -595,21 +713,45 @@ class AlignGUI(QWidget):
         x_shift = self.x_slider.value()
         y_shift = self.y_slider.value()
         rotation = self.rot_slider.value() / 10
+        scale = self.scale_slider.value() / 100.0
         alpha = self.alpha_slider.value() / 100.0
 
         # Update params_all for current session
         self.params_all['sessions'][self.session_idx] = {
             'x_shift': x_shift,
             'y_shift': y_shift,
-            'rotation': rotation
+            'rotation': rotation,
+            'scale': scale
         }
 
         # Get images
         ref_img = self.mean_frames[self.ref_idx]
         target_img = self.mean_frames[self.session_idx]
 
-        # Apply rotation & shift
-        rotated = rotate(target_img, rotation, reshape=False, order=0)
+        # Apply scaling, rotation & shift
+        if scale != 1.0:
+            scaled = zoom(target_img, scale, order=0)
+            # Crop or pad to match original size
+            if scale > 1.0:
+                # If scaled up, crop to center
+                h, w = target_img.shape
+                sh, sw = scaled.shape
+                start_h = (sh - h) // 2
+                start_w = (sw - w) // 2
+                scaled = scaled[start_h:start_h+h, start_w:start_w+w]
+            else:
+                # If scaled down, pad to original size
+                h, w = target_img.shape
+                sh, sw = scaled.shape
+                pad_h = (h - sh) // 2
+                pad_w = (w - sw) // 2
+                padded = np.zeros_like(target_img)
+                padded[pad_h:pad_h+sh, pad_w:pad_w+sw] = scaled
+                scaled = padded
+        else:
+            scaled = target_img.copy()
+            
+        rotated = rotate(scaled, rotation, reshape=False, order=0)
         aligned = shift(rotated, (y_shift, x_shift), order=0)
 
         # Display
