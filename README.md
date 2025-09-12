@@ -1,6 +1,6 @@
 # TIFFAlign: Manual Alignment Across Imaging Sessions
 
-This repository provides a **PyQt5-based GUI** for manually aligning one-photon / two-photon imaging sessions (`.sbx` or `.tiff` files). It allows interactive adjustment of **x/y shifts, rotation, and transparency**, and can save aligned data into a single TIFF stack.
+This repository provides a **PyQt5-based GUI** for manually aligning one-photon / two-photon imaging sessions (`.sbx` or `.tiff` files). It allows interactive adjustment of **x/y shifts, rotation, scaling, and transparency**, and can save aligned data into a single TIFF stack.
 
 Although many excellent automated motion correction algorithms exist, they are generally optimized for **within-session motion artifacts**. When working with **multiple sessions concatenated together**, shifts or rotations often occur between sessions. In these cases, we found that a manual **pre-alignment** step produces better results before applying automated motion correction. This little GUI was developed to streamline that process.
 
@@ -17,7 +17,8 @@ Although many excellent automated motion correction algorithms exist, they are g
   - X shift  
   - Y shift  
   - Rotation  
-  - Transparency blending
+  - Scaling
+  - Alpha (Transparency)
 - Save / load **alignment parameters**
 - Export aligned sessions as a concatenated tiff file.
 - Dark theme interface with **live overlay preview**
@@ -54,19 +55,20 @@ python TIFFAlign.py
 1. Choose the **File Extension** (`sbx` or `tiff`).
 2. Select a **Folder** containing `.sbx` or `.tif`/`.tiff` files. 
    - The files can exist in subfolders as `rglob` is used to find the files.
-   - For the sessions to be concatenated in the correct order, please name the files so that they can be easily sorted with the python `sorted` function.
+   - For the sessions to be concatenated in the correct order, please name the files so that they can be easily sorted with the python `sorted` function (e.g., by adding leading numbers like 000, 001, etc.)
    - For `.sbx` files, the corresponding `.mat` metadata files are also required.
    - For the very first time, it will read and compute and mean frames for the first 100 frames of each session. These will be cached into `mean_frames.pkl` for future reload.
    - If there is an existing alignment parameter file `params_all.pkl` in the folder, it will be automatically loaded.
 3. Pick a **Reference Session** and a **Moving Session**.
    - The reference session is shown in grayscale, while the moving session is overlaid using the *inferno* colormap.  
    - Use the alpha slider to adjust transparency and better visualize the alignment.  
-   - When saving, the reference session remains unchanged; only the moving session is adjusted.  
+   - When saving, the reference session remains unchanged; only the moving sessions will be adjusted.  
 4. Adjust alignment using the **Sliders**:
    - X Shift
    - Y Shift
    - Rotation
-   - Alpha (transparency)
+   - Scaling
+   - Alpha (Transparency)
 5. Save alignment parameters for later use.
 6. Export the aligned file with **Save Aligned TIFF**.  
    - Files are read using `memmap` by default for efficiency.  
