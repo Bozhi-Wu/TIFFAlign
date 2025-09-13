@@ -793,7 +793,8 @@ class AlignGUI(QWidget):
             self.params_all['reference_session'] = self.ref_idx
             with open(self.params_path, 'wb') as f:
                 pickle.dump(self.params_all, f)
-            print(f"Alignment parameters saved to {self.params_path} (reference session: {self.ref_idx})")
+            print(f"Alignment parameters saved.")
+            #print(f"Alignment parameters saved to {self.params_path} (reference session: {self.ref_idx})")
 
     def load_params(self):
         if hasattr(self, 'params_path') and self.params_path.exists():
@@ -802,7 +803,8 @@ class AlignGUI(QWidget):
             
             # Load reference session and update GUI
             self.ref_idx = self.params_all['reference_session']
-            print(f"Loaded alignment parameters from {self.params_path} (reference session: {self.ref_idx})")
+            print(f"Alignment parameters loaded.")
+            #print(f"Loaded alignment parameters from {self.params_path} (reference session: {self.ref_idx})")
             
             # Update GUI selectors
             if hasattr(self, 'ref_selector') and hasattr(self, 'session_selector'):
