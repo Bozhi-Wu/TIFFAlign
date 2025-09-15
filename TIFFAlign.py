@@ -10,7 +10,7 @@ from scipy.ndimage import shift, rotate, zoom
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from tifffile import TiffWriter, memmap, TiffFile, imread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QFileDialog, QProgressBar, QSizePolicy, QLineEdit
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QFileDialog, QProgressBar, QSizePolicy, QLineEdit, QCheckBox, QGroupBox, QGridLayout
 
 # --- Helper functions for loading SBX ---
 def loadmat(matfile):
@@ -253,12 +253,156 @@ class SaveThread(QThread):
         except Exception as e:
             self.saving_finished.emit(False, f"Error during saving: {str(e)}")
 
+# --- Background Auto Alignment Thread ---
+class AutoAlignThread(QThread):
+    progress_updated = pyqtSignal(int)
+    status_updated = pyqtSignal(str)
+    finished_with_params = pyqtSignal(dict)
+
+    def __init__(self, ref_img, mov_img, rot_min=-10.0, rot_max=10.0, rot_step=0.1, scale_min=0.95, scale_max=1.05, scale_step=0.01, crop_frac=0.6, trans_max=30, verbose=True):
+        super().__init__()
+        self.ref_img = ref_img
+        self.mov_img = mov_img
+        self.rot_min = rot_min
+        self.rot_max = rot_max
+        self.rot_step = rot_step
+        self.scale_min = scale_min
+        self.scale_max = scale_max
+        self.scale_step = scale_step
+        self.crop_frac = crop_frac
+        self.trans_max = trans_max
+        self.verbose = verbose
+
+    def run(self):
+        try:
+            if self.verbose:
+                self.status_updated.emit("Auto-align: preparing...")
+            ref = self._normalize(self.ref_img.astype(np.float32))
+            mov = self._normalize(self.mov_img.astype(np.float32))
+
+            rotations = np.arange(self.rot_min, self.rot_max + 1e-6, self.rot_step)
+            scales = np.arange(self.scale_min, self.scale_max + 1e-9, self.scale_step)
+            num_steps = max(1, len(rotations) * len(scales))
+            best = {'rotation': 0.0, 'scale': 1.0, 'x_shift': 0, 'y_shift': 0, 'score': -np.inf}
+
+            ref_c = self._center_crop(ref, self.crop_frac)
+
+            step_counter = 0
+            for s in scales:
+                # Scale moving image to original size via crop/pad to compare fairly
+                scaled_full = self._apply_scale_to_size(mov, s)
+                for rot in rotations:
+                    if self.verbose:
+                        self.status_updated.emit(f"Auto-align: scale {s:.3f}, rot {rot:.1f}°")
+                    rotated = rotate(scaled_full, rot, reshape=False, order=0)
+                    rot_c = self._center_crop(rotated, self.crop_frac)
+                    
+                    # Only estimate translation if enabled
+                    if self.trans_max > 0:
+                        dy, dx = self._estimate_translation_fft(ref_c, rot_c)
+                        # Limit translation to max shift
+                        dy = max(-self.trans_max, min(self.trans_max, dy))
+                        dx = max(-self.trans_max, min(self.trans_max, dx))
+                        shifted = shift(rotated, (dy, dx), order=0)
+                    else:
+                        dy, dx = 0, 0
+                        shifted = rotated
+                    
+                    shifted_c = self._center_crop(shifted, self.crop_frac)
+                    score = self._pearson(ref_c, shifted_c)
+
+                    if score > best['score']:
+                        best = {
+                            'rotation': float(rot),
+                            'scale': float(s),
+                            'x_shift': int(round(dx)),
+                            'y_shift': int(round(dy)),
+                            'score': float(score)
+                        }
+
+                    step_counter += 1
+                    if num_steps > 1:
+                        self.progress_updated.emit(int(step_counter / num_steps * 100))
+
+            if self.verbose:
+                self.status_updated.emit(f"Auto-align: best corr {best['score']:.4f}")
+            self.finished_with_params.emit({'rotation': best['rotation'], 'scale': best['scale'], 'x_shift': best['x_shift'], 'y_shift': best['y_shift']})
+        except Exception as e:
+            self.status_updated.emit(f"Auto-align error: {str(e)}")
+            # Emit something reasonable to avoid hanging
+            self.finished_with_params.emit({'rotation': 0.0, 'scale': 1.0, 'x_shift': 0, 'y_shift': 0})
+
+    def _center_crop(self, img, frac):
+        h, w = img.shape
+        ch = max(1, int(h * frac))
+        cw = max(1, int(w * frac))
+        y0 = (h - ch) // 2
+        x0 = (w - cw) // 2
+        return img[y0:y0+ch, x0:x0+cw]
+
+    def _normalize(self, img):
+        m = np.mean(img)
+        s = np.std(img)
+        if s == 0:
+            return img * 0.0
+        return (img - m) / s
+
+    def _pearson(self, a, b):
+        a_flat = a.ravel()
+        b_flat = b.ravel()
+        am = a_flat - a_flat.mean()
+        bm = b_flat - b_flat.mean()
+        denom = np.linalg.norm(am) * np.linalg.norm(bm)
+        if denom == 0:
+            return -1.0
+        return float(np.dot(am, bm) / denom)
+
+    def _estimate_translation_fft(self, ref, img):
+        # Phase correlation to estimate integer-pixel shift between two images of same size
+        # Return dy, dx (row, col shift)
+        f0 = np.fft.fft2(ref)
+        f1 = np.fft.fft2(img)
+        eps = 1e-9
+        cross_power = f0 * np.conj(f1)
+        cross_power /= np.maximum(np.abs(cross_power), eps)
+        c = np.fft.ifft2(cross_power)
+        c = np.abs(c)
+        maxpos = np.unravel_index(np.argmax(c), c.shape)
+        shifts = np.array(maxpos, dtype=np.int64)
+        h, w = ref.shape
+        # Wrap-around correction
+        if shifts[0] > h // 2:
+            shifts[0] -= h
+        if shifts[1] > w // 2:
+            shifts[1] -= w
+        dy, dx = shifts[0], shifts[1]
+        return int(dy), int(dx)
+
+    def _apply_scale_to_size(self, img, scale):
+        if abs(scale - 1.0) < 1e-6:
+            return img.copy()
+        scaled = zoom(img, scale, order=0)
+        h, w = img.shape
+        sh, sw = scaled.shape
+        if scale > 1.0:
+            # Crop to center
+            start_h = (sh - h) // 2
+            start_w = (sw - w) // 2
+            return scaled[start_h:start_h+h, start_w:start_w+w]
+        else:
+            # Pad to original size
+            pad_h = max(0, (h - sh) // 2)
+            pad_w = max(0, (w - sw) // 2)
+            out = np.zeros_like(img)
+            out[pad_h:pad_h+sh, pad_w:pad_w+sw] = scaled
+            return out
+
 # --- GUI Class ---
 class AlignGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('TIFFAlign')
-        self.setGeometry(300, 150, 900, 1200)
+        self.center_window()
         self.session_idx = 0
         self.ref_idx = 0
         self.alpha = 0.5
@@ -307,13 +451,98 @@ class AlignGUI(QWidget):
         self.session_selector = QComboBox()
         add_row("Moving Session:", self.session_selector)
 
+        # --- Parameter Configuration Section ---
+        param_group = QGroupBox("Auto-Alignment Parameters")
+        param_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #555555;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        param_layout = QGridLayout()
+        
+        # Translation parameters
+        self.trans_checkbox = QCheckBox("Translation")
+        self.trans_checkbox.setChecked(True)
+        param_layout.addWidget(self.trans_checkbox, 0, 0)
+        
+        param_layout.addWidget(QLabel("Max Shift:"), 0, 1)
+        self.trans_max_input = QLineEdit("20")
+        self.trans_max_input.setMaximumWidth(60)
+        param_layout.addWidget(self.trans_max_input, 0, 2)
+        
+        # Center crop fraction
+        param_layout.addWidget(QLabel("Crop:"), 0, 5)
+        self.crop_input = QLineEdit("0.6")
+        self.crop_input.setMaximumWidth(60)
+        param_layout.addWidget(self.crop_input, 0, 6)
+        
+        # Rotation parameters
+        self.rot_checkbox = QCheckBox("Rotation")
+        self.rot_checkbox.setChecked(True)
+        param_layout.addWidget(self.rot_checkbox, 1, 0)
+        
+        param_layout.addWidget(QLabel("Min:"), 1, 1)
+        self.rot_min_input = QLineEdit("-5.0")
+        self.rot_min_input.setMaximumWidth(60)
+        param_layout.addWidget(self.rot_min_input, 1, 2)
+        
+        param_layout.addWidget(QLabel("Max:"), 1, 3)
+        self.rot_max_input = QLineEdit("5.0")
+        self.rot_max_input.setMaximumWidth(60)
+        param_layout.addWidget(self.rot_max_input, 1, 4)
+        
+        param_layout.addWidget(QLabel("Step:"), 1, 5)
+        self.rot_step_input = QLineEdit("0.1")
+        self.rot_step_input.setMaximumWidth(60)
+        param_layout.addWidget(self.rot_step_input, 1, 6)
+        
+        # Scale parameters
+        self.scale_checkbox = QCheckBox("Scale")
+        self.scale_checkbox.setChecked(False)
+        param_layout.addWidget(self.scale_checkbox, 2, 0)
+        
+        param_layout.addWidget(QLabel("Min:"), 2, 1)
+        self.scale_min_input = QLineEdit("0.95")
+        self.scale_min_input.setMaximumWidth(60)
+        param_layout.addWidget(self.scale_min_input, 2, 2)
+        
+        param_layout.addWidget(QLabel("Max:"), 2, 3)
+        self.scale_max_input = QLineEdit("1.05")
+        self.scale_max_input.setMaximumWidth(60)
+        param_layout.addWidget(self.scale_max_input, 2, 4)
+        
+        param_layout.addWidget(QLabel("Step:"), 2, 5)
+        self.scale_step_input = QLineEdit("0.01")
+        self.scale_step_input.setMaximumWidth(60)
+        param_layout.addWidget(self.scale_step_input, 2, 6)
+        
+        param_group.setLayout(param_layout)
+        selectors_layout.addWidget(param_group)
+
         # --- Sliders ---
         self.x_label, self.x_slider, self.x_input = self.create_slider("X Shift", -50, 50, 0, sliders_layout)
         self.y_label, self.y_slider, self.y_input = self.create_slider("Y Shift", -50, 50, 0, sliders_layout)
         self.rot_label, self.rot_slider, self.rot_input = self.create_slider("Rotation", -100, 100, 0, sliders_layout)
         self.scale_label, self.scale_slider, self.scale_input = self.create_slider("Scale", 50, 150, 100, sliders_layout)
         self.alpha_label, self.alpha_slider, self.alpha_input = self.create_slider("Alpha", 0, 100, 50, sliders_layout)
-
+        
+        # Auto alignment buttons
+        self.auto_align_button = QPushButton("Auto Align Current Session")
+        self.auto_align_button.clicked.connect(self.auto_align)
+        sliders_layout.addWidget(self.auto_align_button)
+        self.auto_align_all_button = QPushButton("Auto Align All Sessions")
+        self.auto_align_all_button.clicked.connect(self.auto_align_all)
+        sliders_layout.addWidget(self.auto_align_all_button)
+        
         # --- Save buttons ---
         self.save_params_button = QPushButton("Save Alignment Parameters")
         self.save_params_button.clicked.connect(self.save_params)
@@ -322,7 +551,7 @@ class AlignGUI(QWidget):
         self.load_params_button = QPushButton("Load Alignment Parameters")
         self.load_params_button.clicked.connect(self.load_params)
         sliders_layout.addWidget(self.load_params_button)
-        
+
         self.save_button = QPushButton("Save Aligned TIFF")
         self.save_button.clicked.connect(self.apply_and_save)
         sliders_layout.addWidget(self.save_button)
@@ -365,6 +594,18 @@ class AlignGUI(QWidget):
             self.update_image()
 
     # ------------------- Helper Methods -------------------
+    def center_window(self):
+        """Center the window on the screen"""
+        # Get screen geometry
+        screen = QApplication.desktop().screenGeometry()
+        # Set window size (narrower and taller)
+        window_width, window_height = 1250, 1400
+        # Calculate center position
+        x = (screen.width() - window_width) // 2
+        y = (screen.height() - window_height) // 2
+        # Set geometry
+        self.setGeometry(x, y, window_width, window_height)
+    
     def set_dark_theme(self):
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(30, 30, 30))
@@ -508,8 +749,25 @@ class AlignGUI(QWidget):
         self.save_button.setEnabled(enable)
         self.save_params_button.setEnabled(enable)
         self.load_params_button.setEnabled(enable)
+        if hasattr(self, 'auto_align_button'):
+            self.auto_align_button.setEnabled(enable)
+        if hasattr(self, 'auto_align_all_button'):
+            self.auto_align_all_button.setEnabled(enable)
         self.ref_selector.setEnabled(enable)
         self.session_selector.setEnabled(enable)
+        # Enable/disable parameter inputs
+        if hasattr(self, 'rot_checkbox'):
+            self.rot_checkbox.setEnabled(enable)
+            self.rot_min_input.setEnabled(enable)
+            self.rot_max_input.setEnabled(enable)
+            self.rot_step_input.setEnabled(enable)
+            self.scale_checkbox.setEnabled(enable)
+            self.scale_min_input.setEnabled(enable)
+            self.scale_max_input.setEnabled(enable)
+            self.scale_step_input.setEnabled(enable)
+            self.trans_checkbox.setEnabled(enable)
+            self.trans_max_input.setEnabled(enable)
+            self.crop_input.setEnabled(enable)
 
     # ------------------- Folder / SBX Loading -------------------
     def select_folder(self):
@@ -815,6 +1073,222 @@ class AlignGUI(QWidget):
                 self.change_session(0)  # Start with first available session
         else:
             print("No saved parameters found.")
+
+    # ------------------- Parameter Configuration -------------------
+    def get_auto_align_params(self):
+        """Get auto-alignment parameters from UI inputs with validation"""
+        try:
+            params = {}
+            
+            # Rotation parameters
+            if self.rot_checkbox.isChecked():
+                params['rot_min'] = float(self.rot_min_input.text())
+                params['rot_max'] = float(self.rot_max_input.text())
+                params['rot_step'] = float(self.rot_step_input.text())
+            else:
+                params['rot_min'] = 0.0
+                params['rot_max'] = 0.0
+                params['rot_step'] = 1.0
+            
+            # Scale parameters
+            if self.scale_checkbox.isChecked():
+                params['scale_min'] = float(self.scale_min_input.text())
+                params['scale_max'] = float(self.scale_max_input.text())
+                params['scale_step'] = float(self.scale_step_input.text())
+            else:
+                params['scale_min'] = 1.0
+                params['scale_max'] = 1.0
+                params['scale_step'] = 1.0
+            
+            # Translation parameters
+            if self.trans_checkbox.isChecked():
+                params['trans_max'] = int(float(self.trans_max_input.text()))
+            else:
+                params['trans_max'] = 0
+            
+            # Center crop fraction
+            params['crop_frac'] = float(self.crop_input.text())
+            
+            # Validation
+            if params['rot_min'] > params['rot_max']:
+                params['rot_min'], params['rot_max'] = params['rot_max'], params['rot_min']
+            if params['scale_min'] > params['scale_max']:
+                params['scale_min'], params['scale_max'] = params['scale_max'], params['scale_min']
+            if params['crop_frac'] <= 0 or params['crop_frac'] > 1:
+                params['crop_frac'] = 0.6
+                
+            return params
+        except (ValueError, AttributeError):
+            # Return defaults if parsing fails
+            return {
+                'rot_min': -10.0, 'rot_max': 10.0, 'rot_step': 0.1,
+                'scale_min': 0.95, 'scale_max': 1.05, 'scale_step': 0.01,
+                'trans_max': 50, 'crop_frac': 0.6
+            }
+
+    # ------------------- Auto Alignment -------------------
+    def auto_align(self):
+        if self.mean_frames is None or self.n_sessions < 2:
+            return
+        if self.session_idx == self.ref_idx:
+            self.status_label.setText("Select a moving session different from the reference.")
+            return
+        # Prepare inputs
+        ref_img = self.mean_frames[self.ref_idx]
+        mov_img = self.mean_frames[self.session_idx]
+
+        # Show progress
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setText(f"Aligning Session {self.session_idx}")
+        self.enable_controls(False)
+
+        # Get parameters from UI
+        params = self.get_auto_align_params()
+        
+        # Create and start thread
+        self.auto_thread = AutoAlignThread(
+            ref_img=ref_img,
+            mov_img=mov_img,
+            rot_min=params['rot_min'],
+            rot_max=params['rot_max'],
+            rot_step=params['rot_step'],
+            scale_min=params['scale_min'],
+            scale_max=params['scale_max'],
+            scale_step=params['scale_step'],
+            crop_frac=params['crop_frac'],
+            trans_max=params['trans_max'],
+            verbose=False
+        )
+        self.auto_thread.progress_updated.connect(self.progress_bar.setValue)
+        # Suppress detailed per-iteration status in UI
+        self.auto_thread.finished_with_params.connect(self.on_auto_align_finished)
+        self.auto_thread.start()
+
+    def on_auto_align_finished(self, best_params):
+        # Update sliders/params
+        try:
+            x_shift = int(best_params.get('x_shift', 0))
+            y_shift = int(best_params.get('y_shift', 0))
+            rotation = float(best_params.get('rotation', 0.0))
+            scale = float(best_params.get('scale', 1.0))
+        except Exception:
+            x_shift, y_shift, rotation, scale = 0, 0, 0.0, 1.0
+
+        self.x_slider.setValue(x_shift)
+        self.y_slider.setValue(y_shift)
+        self.rot_slider.setValue(int(round(rotation * 10)))
+        self.scale_slider.setValue(int(round(scale * 100)))
+
+        # Reflect in labels/inputs
+        self.slider_changed(self.x_slider.value(), self.x_label, "X Shift", self.x_input)
+        self.slider_changed(self.y_slider.value(), self.y_label, "Y Shift", self.y_input)
+        self.slider_changed(self.rot_slider.value(), self.rot_label, "Rotation", self.rot_input)
+        self.slider_changed(self.scale_slider.value(), self.scale_label, "Scale", self.scale_input)
+
+        # Force image update and store params via update_image
+        self.update_image()
+
+        # Done UI state
+        self.progress_bar.setVisible(False)
+        self.enable_controls(True)
+        self.status_label.setText("Auto-alignment complete.")
+
+    def auto_align_all(self):
+        if self.mean_frames is None or self.n_sessions < 2:
+            return
+        if self.n_sessions == 1:
+            return
+        self.enable_controls(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        # Build list of moving sessions excluding reference
+        self._sessions_to_align = [i for i in range(self.n_sessions) if i != self.ref_idx]
+        self._align_all_index = 0
+        self._run_next_auto_align_for_all()
+
+    def _run_next_auto_align_for_all(self):
+        if self._align_all_index >= len(self._sessions_to_align):
+            # Done
+            self.progress_bar.setVisible(False)
+            self.enable_controls(True)
+            self.status_label.setText("Auto-alignment for all sessions complete.")
+            # Refresh canvas at end
+            self.update_image()
+            return
+        # Current session
+        cur_session = self._sessions_to_align[self._align_all_index]
+        self.status_label.setText(f"Aligning Session {cur_session}")
+        ref_img = self.mean_frames[self.ref_idx]
+        mov_img = self.mean_frames[cur_session]
+
+        # Store which session we are aligning to update params after thread
+        self._aligning_session_idx = cur_session
+
+        # Get parameters from UI
+        params = self.get_auto_align_params()
+        
+        # Kick off thread (quiet)
+        self.auto_thread = AutoAlignThread(
+            ref_img=ref_img,
+            mov_img=mov_img,
+            rot_min=params['rot_min'],
+            rot_max=params['rot_max'],
+            rot_step=params['rot_step'],
+            scale_min=params['scale_min'],
+            scale_max=params['scale_max'],
+            scale_step=params['scale_step'],
+            crop_frac=params['crop_frac'],
+            trans_max=params['trans_max'],
+            verbose=False
+        )
+        # Progress within this session (we map to overall progress)
+        self.auto_thread.progress_updated.connect(self._on_all_progress)
+        self.auto_thread.finished_with_params.connect(self._on_one_session_auto_finished)
+        self.auto_thread.start()
+
+    def _on_all_progress(self, p):
+        # Map per-session progress to overall
+        total = len(self._sessions_to_align)
+        idx = self._align_all_index
+        overall = int(((idx + p / 100.0) / max(1, total)) * 100)
+        self.progress_bar.setValue(overall)
+
+    def _on_one_session_auto_finished(self, best_params):
+        # Apply to the specific session we aligned
+        session_idx = getattr(self, '_aligning_session_idx', self.session_idx)
+        try:
+            x_shift = int(best_params.get('x_shift', 0))
+            y_shift = int(best_params.get('y_shift', 0))
+            rotation = float(best_params.get('rotation', 0.0))
+            scale = float(best_params.get('scale', 1.0))
+        except Exception:
+            x_shift, y_shift, rotation, scale = 0, 0, 0.0, 1.0
+
+        # Update params store directly
+        self.params_all['sessions'][session_idx] = {
+            'x_shift': x_shift,
+            'y_shift': y_shift,
+            'rotation': rotation,
+            'scale': scale
+        }
+
+        # If the aligned session is currently selected, reflect in sliders
+        if session_idx == self.session_idx:
+            self.x_slider.setValue(x_shift)
+            self.y_slider.setValue(y_shift)
+            self.rot_slider.setValue(int(round(rotation * 10)))
+            self.scale_slider.setValue(int(round(scale * 100)))
+            self.slider_changed(self.x_slider.value(), self.x_label, "X Shift", self.x_input)
+            self.slider_changed(self.y_slider.value(), self.y_label, "Y Shift", self.y_input)
+            self.slider_changed(self.rot_slider.value(), self.rot_label, "Rotation", self.rot_input)
+            self.slider_changed(self.scale_slider.value(), self.scale_label, "Scale", self.scale_input)
+            self.update_image()
+
+        # Advance to next session
+        self._align_all_index += 1
+        self._run_next_auto_align_for_all()
 
 
 # ------------------- Run -------------------
