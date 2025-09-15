@@ -1,6 +1,6 @@
-# TIFFAlign: Manual Alignment Across Imaging Sessions
+# TIFFAlign: Auto Alignment Across Imaging Sessions
 
-This repository provides a **PyQt5-based GUI** for automatic and manual alignment of one-photon / two-photon imaging sessions (`.sbx` or `.tiff` files). It allows interactive adjustment of **x/y shifts, rotation, scaling, and transparency**, and can save aligned data into a single TIFF stack.
+This repository provides a **PyQt5-based GUI** for both automatic and manual alignment of one-photon / two-photon imaging sessions (`.sbx` or `.tiff` files). It allows interactive adjustment of **x/y shifts, rotation, scaling, and transparency**, and can save aligned data into a single TIFF stack.
 
 Although many excellent automated motion correction algorithms exist, they are generally optimized for **within-session motion artifacts**. When working with **multiple sessions concatenated together**, shifts or rotations often occur between sessions. In these cases, we found that a manual **pre-alignment** step produces better results before applying automated motion correction. This little GUI was developed to streamline that process.
 
@@ -12,14 +12,15 @@ Although many excellent automated motion correction algorithms exist, they are g
 
 - Supports both `.sbx` and `.tiff` files
 - Compute **mean frames** for the first 100 frames of each session (cached with pickle for faster reloads)
-- Select any session as the **reference** session
+- Select any session as the **reference session**
 - Interactive controls for:
   - X shift  
   - Y shift  
   - Rotation  
   - Scaling
   - Alpha (Transparency)
-- Save / load **alignment parameters**
+- **Auto alignment** with grid search
+- Save / load alignment parameters
 - Export aligned sessions as a concatenated tiff file.
 - Dark theme interface with **live overlay preview**
 
@@ -63,14 +64,19 @@ python TIFFAlign.py
    - The reference session is shown in grayscale, while the moving session is overlaid using the *inferno* colormap.  
    - Use the alpha slider to adjust transparency and better visualize the alignment.  
    - When saving, the reference session remains unchanged; only the moving sessions will be adjusted.  
-4. Adjust alignment using the **Sliders**:
+4.	Adjust parameters in the **“Auto Alignment Parameters”** section:
+	- Use the checkboxes to select which parameters will be included in the search.
+	- On the right panel, set the **Max**, **Min**, and **Step** for each parameter.
+	- Since the edges of the imaging field can vary more between sessions and may not contain neurons, you can adjust the **Crop** setting so that only the central region of the frame is used for auto-alignment evaluation.
+5.	Run auto alignment using either **“Auto Align Current Session”** or **“Auto Align All Sessions”**.
+6. (Optional) Adjust alignment manually using the **Sliders**:
    - X Shift
    - Y Shift
    - Rotation
    - Scaling
    - Alpha (Transparency)
-5. Save alignment parameters for later use.
-6. Export the aligned file with **Save Aligned TIFF**.  
+7. Save alignment parameters for later use.
+8. Export the aligned file with **Save Aligned TIFF**.  
    - Files are read using `memmap` by default for efficiency.  
    - The output TIFF is written using the detected data type of the original files (for `.sbx` files, `uint16` is used).  
    - If `memmap` fails, the tool automatically falls back to `imread`, which loads the entire file into memory.  

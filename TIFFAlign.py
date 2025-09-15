@@ -276,7 +276,7 @@ class AutoAlignThread(QThread):
     def run(self):
         try:
             if self.verbose:
-                self.status_updated.emit("Auto-align: preparing...")
+                self.status_updated.emit("Auto align: preparing...")
             ref = self._normalize(self.ref_img.astype(np.float32))
             mov = self._normalize(self.mov_img.astype(np.float32))
 
@@ -293,7 +293,7 @@ class AutoAlignThread(QThread):
                 scaled_full = self._apply_scale_to_size(mov, s)
                 for rot in rotations:
                     if self.verbose:
-                        self.status_updated.emit(f"Auto-align: scale {s:.3f}, rot {rot:.1f}°")
+                        self.status_updated.emit(f"Auto align: scale {s:.3f}, rot {rot:.1f}°")
                     rotated = rotate(scaled_full, rot, reshape=False, order=0)
                     rot_c = self._center_crop(rotated, self.crop_frac)
                     
@@ -325,10 +325,10 @@ class AutoAlignThread(QThread):
                         self.progress_updated.emit(int(step_counter / num_steps * 100))
 
             if self.verbose:
-                self.status_updated.emit(f"Auto-align: best corr {best['score']:.4f}")
+                self.status_updated.emit(f"Auto align: best corr {best['score']:.4f}")
             self.finished_with_params.emit({'rotation': best['rotation'], 'scale': best['scale'], 'x_shift': best['x_shift'], 'y_shift': best['y_shift']})
         except Exception as e:
-            self.status_updated.emit(f"Auto-align error: {str(e)}")
+            self.status_updated.emit(f"Auto align error: {str(e)}")
             # Emit something reasonable to avoid hanging
             self.finished_with_params.emit({'rotation': 0.0, 'scale': 1.0, 'x_shift': 0, 'y_shift': 0})
 
@@ -452,7 +452,7 @@ class AlignGUI(QWidget):
         add_row("Moving Session:", self.session_selector)
 
         # --- Parameter Configuration Section ---
-        param_group = QGroupBox("Auto-Alignment Parameters")
+        param_group = QGroupBox("Auto Alignment Parameters")
         param_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -1076,7 +1076,7 @@ class AlignGUI(QWidget):
 
     # ------------------- Parameter Configuration -------------------
     def get_auto_align_params(self):
-        """Get auto-alignment parameters from UI inputs with validation"""
+        """Get auto alignment parameters from UI inputs with validation"""
         try:
             params = {}
             
@@ -1192,7 +1192,7 @@ class AlignGUI(QWidget):
         # Done UI state
         self.progress_bar.setVisible(False)
         self.enable_controls(True)
-        self.status_label.setText("Auto-alignment complete.")
+        self.status_label.setText("Auto alignment complete.")
 
     def auto_align_all(self):
         if self.mean_frames is None or self.n_sessions < 2:
@@ -1213,7 +1213,7 @@ class AlignGUI(QWidget):
             # Done
             self.progress_bar.setVisible(False)
             self.enable_controls(True)
-            self.status_label.setText("Auto-alignment for all sessions complete.")
+            self.status_label.setText("Auto alignment for all sessions complete.")
             # Refresh canvas at end
             self.update_image()
             return
