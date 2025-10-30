@@ -60,6 +60,53 @@ def load_tiff_optimized(filepath, max_frames=100):
             frames.append(tif.pages[i].asarray())
         
         return np.array(frames), n_frames, dtype
+    
+def correct_blocked_lines(data, threshold=1000, n_max_window=2):
+
+    n_frames, height, _ = data.shape
+    corrected = data.copy()
+
+    # Precompute which rows are blocked in each frame
+    blocked_mask = np.zeros((n_frames, height), dtype=bool)
+    for i in range(n_frames):
+        row_means = data[i].mean(axis=1)
+        blocked_mask[i, :] = row_means < threshold
+
+    for i in range(n_frames):
+
+        blocked_rows = np.where(blocked_mask[i])[0]
+
+        # Skip frames without stimulation
+        if len(blocked_rows) == 0:
+            continue
+
+        for r in blocked_rows:
+            clean_before = None
+            clean_after = None
+            
+            # Find the clean rows before
+            for k in range(1, n_max_window+1):
+                if i - k >= 0 and not blocked_mask[i - k, r]:
+                    clean_before = data[i - k, r, :]
+                    break
+            # Find the clean rows after
+            for k in range(1, n_max_window+1):
+                if i + k < n_frames and not blocked_mask[i + k, r]:
+                    clean_after = data[i + k, r, :]
+                    break
+
+            # Compute corrected row based on findings
+            if clean_before is not None and clean_after is not None:
+                corrected_row = np.stack([clean_before, clean_after]).mean(axis=0).astype(np.uint16)
+            elif clean_before is not None:
+                corrected_row = clean_before.copy()
+            elif clean_after is not None:
+                corrected_row = clean_after.copy()
+            else:
+                corrected_row = np.zeros_like(data[i, r, :], dtype=np.uint16)
+            corrected[i, r, :] = corrected_row
+            
+    return corrected
 
 # --- Background Loading Thread ---
 class DataLoaderThread(QThread):
@@ -138,7 +185,7 @@ class SaveThread(QThread):
     status_updated = pyqtSignal(str)
     saving_finished = pyqtSignal(bool, str)
 
-    def __init__(self, folderpath, exten, params_all, ref_idx, savepath, detected_dtype):
+    def __init__(self, folderpath, exten, params_all, ref_idx, savepath, detected_dtype, blocked_sessions=None, blocked_threshold=1000, blocked_window=2):
         super().__init__()
         self.folderpath = folderpath
         self.exten = exten
@@ -146,6 +193,9 @@ class SaveThread(QThread):
         self.ref_idx = ref_idx
         self.savepath = savepath
         self.detected_dtype = detected_dtype
+        self.blocked_sessions = set(blocked_sessions or [])
+        self.blocked_threshold = int(blocked_threshold)
+        self.blocked_window = int(blocked_window)
 
     def run(self):
         try:
@@ -204,25 +254,39 @@ class SaveThread(QThread):
                     params = self.params_all['sessions'].get(nn, {'x_shift': 0, 'y_shift': 0, 'rotation': 0, 'scale': 1.0})
 
                     chunk_size = 1000
+                    apply_correction = nn in self.blocked_sessions
                     for i in range(0, frames.shape[0], chunk_size):
                         end_idx = min(i + chunk_size, frames.shape[0])
-                        chunk = frames[i:end_idx]
 
-                        for frame in chunk:
+                        if apply_correction:
+                            # Create overlapped window to preserve neighbors across chunk boundaries
+                            win_start = max(0, i - self.blocked_window)
+                            win_end = min(frames.shape[0], end_idx + self.blocked_window)
+                            window = frames[win_start:win_end]
+                            try:
+                                window_corr = correct_blocked_lines(window, threshold=self.blocked_threshold, n_max_window=self.blocked_window)
+                            except Exception as e:
+                                self.status_updated.emit(f"Blocked-lines correction error (session {nn}): {e}. Skipping correction for this window.")
+                                window_corr = window
+                            core_start = i - win_start
+                            core_end = core_start + (end_idx - i)
+                            chunk_iter = window_corr[core_start:core_end]
+                        else:
+                            chunk_iter = frames[i:end_idx]
+
+                        for frame in chunk_iter:
                             if nn != self.ref_idx:
                                 # Apply scaling
                                 if params['scale'] != 1.0:
                                     scaled = zoom(frame, params['scale'], order=0)
                                     # Crop or pad to match original size
                                     if params['scale'] > 1.0:
-                                        # If scaled up, crop to center
                                         h, w = frame.shape
                                         sh, sw = scaled.shape
                                         start_h = (sh - h) // 2
                                         start_w = (sw - w) // 2
                                         scaled = scaled[start_h:start_h+h, start_w:start_w+w]
                                     else:
-                                        # If scaled down, pad to original size
                                         h, w = frame.shape
                                         sh, sw = scaled.shape
                                         pad_h = (h - sh) // 2
@@ -231,7 +295,6 @@ class SaveThread(QThread):
                                         padded[pad_h:pad_h+sh, pad_w:pad_w+sw] = scaled
                                         scaled = padded
                                     frame = scaled
-                                
                                 # Apply rotation and shift
                                 rotated = rotate(frame, params['rotation'], reshape=False, order=0)
                                 frame = shift(rotated, [params['y_shift'], params['x_shift']], order=0)
@@ -239,7 +302,6 @@ class SaveThread(QThread):
 
                             # Update progress
                             frames_done += 1
-                            # Avoid excessive signal emissions by batching a bit
                             if total_frames > 0 and frames_done % 50 == 0:
                                 progress = int(frames_done / total_frames * 100)
                                 self.progress_updated.emit(progress)
@@ -451,6 +513,9 @@ class AlignGUI(QWidget):
         self.session_selector = QComboBox()
         add_row("Moving Session:", self.session_selector)
 
+        # --- Blocked-Frames Correction Section --- (moved below Auto Alignment Parameters)
+        # will be created after the parameter group
+
         # --- Parameter Configuration Section ---
         param_group = QGroupBox("Auto Alignment Parameters")
         param_group.setStyleSheet("""
@@ -527,6 +592,40 @@ class AlignGUI(QWidget):
         
         param_group.setLayout(param_layout)
         selectors_layout.addWidget(param_group)
+
+        # Now add the Blocked-Frames Correction Section below the parameters
+        self.correction_group = QGroupBox("Stimulation Blocked Frames Correction")
+        self.correction_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #555555;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        self.correction_layout = QGridLayout()
+        # Inputs for parameters
+        self.correction_layout.addWidget(QLabel("Threshold:"), 0, 0)
+        self.correction_threshold_input = QLineEdit("1000")
+        self.correction_threshold_input.setMaximumWidth(80)
+        self.correction_layout.addWidget(self.correction_threshold_input, 0, 1)
+        self.correction_layout.addWidget(QLabel("Window:"), 0, 2)
+        self.correction_window_input = QLineEdit("2")
+        self.correction_window_input.setMaximumWidth(60)
+        self.correction_layout.addWidget(self.correction_window_input, 0, 3)
+        # Single checkbox to enable/disable correction on all sessions
+        self.correction_enable_checkbox = QCheckBox("Interpolate Blocked Frames")
+        self.correction_enable_checkbox.setChecked(False)
+        self.correction_layout.addWidget(self.correction_enable_checkbox, 1, 0, 1, 4)
+        self.correction_group.setLayout(self.correction_layout)
+        selectors_layout.addWidget(self.correction_group)
+        # No per-session selection state needed
 
         # --- Sliders ---
         self.x_label, self.x_slider, self.x_input = self.create_slider("X Shift", -50, 50, 0, sliders_layout)
@@ -866,6 +965,8 @@ class AlignGUI(QWidget):
         self.ref_selector.clear()
         self.ref_selector.addItems([f"Session {i}" for i in range(self.n_sessions)])
 
+        # Nothing to reset for global correction toggle
+
         # Reconnect signals
         self.session_selector.currentIndexChanged.connect(self.change_session)
         self.ref_selector.currentIndexChanged.connect(self.change_reference)
@@ -886,6 +987,8 @@ class AlignGUI(QWidget):
         
         self.status_label.setText(f"Ready - {self.n_sessions} sessions loaded (data type: {self.detected_dtype})")
         self.update_image()
+
+    # Removed per-session selection dialog
 
     # ------------------- Session Changes -------------------
     def change_session(self, selector_idx):
@@ -1026,8 +1129,32 @@ class AlignGUI(QWidget):
         self.progress_bar.setValue(0)
         self.enable_controls(False)
 
+        # Gather correction selections and params
+        if self.correction_enable_checkbox.isChecked():
+            selected_sessions = list(range(self.n_sessions))
+        else:
+            selected_sessions = []
+        try:
+            corr_threshold = int(float(self.correction_threshold_input.text()))
+        except Exception:
+            corr_threshold = 1000
+        try:
+            corr_window = int(float(self.correction_window_input.text()))
+        except Exception:
+            corr_window = 2
+
         # Start background save thread
-        self.save_thread = SaveThread(self.folderpath, self.exten, self.params_all, self.ref_idx, self.savepath.as_posix(), self.detected_dtype)
+        self.save_thread = SaveThread(
+            self.folderpath,
+            self.exten,
+            self.params_all,
+            self.ref_idx,
+            self.savepath.as_posix(),
+            self.detected_dtype,
+            blocked_sessions=selected_sessions,
+            blocked_threshold=corr_threshold,
+            blocked_window=corr_window
+        )
         self.save_thread.progress_updated.connect(self.progress_bar.setValue)
         self.save_thread.status_updated.connect(self.status_label.setText)
         self.save_thread.saving_finished.connect(self.on_saving_finished)

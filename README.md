@@ -22,6 +22,7 @@ Although many excellent automated motion correction algorithms exist, they are g
 - **Auto alignment** with grid search
 - Save / load alignment parameters
 - Export aligned sessions as a concatenated tiff file.
+- **Interpolate** 2P stimulation blocked frames.
 - Dark theme interface with **live overlay preview**
 
 
@@ -75,8 +76,19 @@ python TIFFAlign.py
    - Rotation
    - Scaling
    - Alpha (Transparency)
-7. Save alignment parameters for later use.
-8. Export the aligned file with **Save Aligned TIFF**.  
+7. (Optional) Save alignment parameters for later use.
+8. (Optional) Interpolate 2P stimulation blocked frames in **"Stimulation Blocked Frames Correction"**:
+   - During 2P optogenetic stimulation, the PMT is often shuttered for a short period, producing horizontal “blocked” (dark) rows in the recording. To minimize the impact of these artifacts in downstream processing, you can optionally interpolate the blocked rows using the mean of the nearest clean rows from adjacent frames.
+   - Blocked rows are identified by calculating their mean intensity and comparing it to a **threshold**. For `uint16` videos, the default threshold is 1000.
+   - A **window** parameter defines how many frames before and after a blocked frame to search for clean rows (default: 2).
+      - If both previous and next clean rows are found → the mean of the two is used.
+      - If only one clean row is found → that row is used.
+      - If no clean rows are found within the window → the row is filled with zeros.
+   - **Check the checkbox** to apply interpolation during the saving process. 
+
+![Interpolation Sample](preview/video_interpolation_sample.png)
+
+9. Export the aligned file with **Save Aligned TIFF**.  
    - Files are read using `memmap` by default for efficiency.  
    - The output TIFF is written using the detected data type of the original files (for `.sbx` files, `uint16` is used).  
    - If `memmap` fails, the tool automatically falls back to `imread`, which loads the entire file into memory.  
