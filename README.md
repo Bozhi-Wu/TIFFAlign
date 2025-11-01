@@ -1,5 +1,7 @@
 # TIFFAlign: Auto Alignment Across Imaging Sessions
 
+[![DOI](https://zenodo.org/badge/1054402476.svg)](https://doi.org/10.5281/zenodo.17499329)
+
 This repository provides a **PyQt5-based GUI** for both automatic and manual alignment of one-photon / two-photon imaging sessions (`.sbx` or `.tiff` files). It allows interactive adjustment of **x/y shifts, rotation, scaling, and transparency**, and can save aligned data into a single TIFF stack.
 
 Although many excellent automated motion correction algorithms exist, they are generally optimized for **within-session motion artifacts**. When working with **multiple sessions concatenated together**, shifts or rotations often occur between sessions. In these cases, we found that a manual **pre-alignment** step produces better results before applying automated motion correction. This little GUI was developed to streamline that process.
@@ -101,3 +103,11 @@ python TIFFAlign.py
 - `params_all.pkl` – Stored alignment parameters.  
 - `mean_frames.pkl` – Cached mean frames for faster reload.  
 - `tiff_manual_aligned.tiff` – Exported aligned tiff file. 
+
+---
+
+## Citation
+
+If you find **TIFFAlign** helpful in your research, please consider citing it as follows:
+
+- Wu, B. (2025). Bozhi-Wu/TIFFAlign (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.17499330
