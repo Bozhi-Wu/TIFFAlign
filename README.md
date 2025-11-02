@@ -110,4 +110,4 @@ python TIFFAlign.py
 
 If you find **TIFFAlign** helpful in your research, please consider citing it as follows:
 
-- Wu, B. (2025). Bozhi-Wu/TIFFAlign (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.17499330
+- Wu, B., & Josselyn, S. (2025). Bozhi-Wu/TIFFAlign (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.17499330
