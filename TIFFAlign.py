@@ -19,22 +19,23 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-from PyQt5.QtGui import QPalette, QColor
+from PyQt5.QtGui import QPalette, QColor, QIntValidator
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
     QPushButton, QComboBox, QFileDialog, QProgressBar, QSizePolicy, QMessageBox,
     QLineEdit, QCheckBox, QGroupBox, QGridLayout, QFormLayout, QScrollArea, QFrame,
-    QToolButton, QAbstractSlider
+    QToolButton, QAbstractSlider, QStyleFactory
 )
 
 OUTPUT_NAME = 'tiff_aligned.tiff'
-# Never treat our own outputs (current or older naming) as input sessions.
-EXCLUDED_NAMES = {OUTPUT_NAME, 'tiff_manual_aligned.tiff'}
+# Never treat our own output as an input session.
+EXCLUDED_NAMES = {OUTPUT_NAME}
 DEFAULT_PARAMS = {'x_shift': 0, 'y_shift': 0, 'rotation': 0.0, 'scale': 1.0}
 # Saving pipeline. The chunk size only needs to be large enough to amortise per-chunk overhead
 # (benchmarks: disk throughput is flat from ~50 frames up) and small enough to bound memory:
 # roughly (SAVE_PREFETCH + 2) chunks are in RAM at once. 256 MB/chunk ≈ 200 frames of 800x796.
+DEFAULT_N_AVG = 100       # default number of frames averaged into each mean frame
 SAVE_CHUNK_BYTES = 256 * 1024 ** 2
 SAVE_CHUNK_MIN, SAVE_CHUNK_MAX = 16, 2000
 SAVE_PREFETCH = 2          # chunks read ahead in the background while the current one is processed
@@ -368,13 +369,24 @@ class DataLoaderThread(QThread):
 
             mean_frames, n_total_frames, detected_dtype = [], 0, None
             for i, file in enumerate(files):
-                self.status_updated.emit(f"Processing file {i+1}/{len(files)}: {file.name}")
                 with StackReader(file, self.exten) as reader:
                     if detected_dtype is None:
                         detected_dtype = reader.dtype
-                    frames = reader.read(0, min(reader.n_frames, self.n_frames_averaged))
                     n_total_frames += reader.n_frames
-                mean_frames.append(np.mean(frames, axis=0).astype(np.uint16))
+                    k = max(1, min(reader.n_frames, self.n_frames_averaged))
+                    self.status_updated.emit(
+                        f"Averaging {k:,} frames of file {i+1}/{len(files)}: {file.name}")
+                    # Accumulate in chunks so averaging many frames never needs them all in RAM.
+                    chunk = auto_chunk_size(reader.frame_shape, reader.dtype)
+                    acc = np.zeros(reader.frame_shape, dtype=np.float64)
+                    for s in range(0, k, chunk):
+                        if self.isInterruptionRequested():
+                            self.loading_finished.emit(None)
+                            return
+                        e = min(s + chunk, k)
+                        acc += reader.read(s, e).sum(axis=0, dtype=np.float64)
+                        self.progress_updated.emit(int((i + e / k) / len(files) * 100))
+                mean_frames.append((acc / k).astype(np.uint16))
                 self.progress_updated.emit(int((i + 1) / len(files) * 100))
 
             self.loading_finished.emit({
@@ -384,6 +396,7 @@ class DataLoaderThread(QThread):
                 'detected_dtype': detected_dtype,
                 'exten': self.exten,
                 'files': [f.relative_to(self.folderpath).as_posix() for f in files],
+                'n_frames_averaged': self.n_frames_averaged,
             })
         except Exception as e:
             self.status_updated.emit(f"Error during loading: {e}")
@@ -724,6 +737,110 @@ CROP_OPPOSITE = {'top': 'bottom', 'bottom': 'top', 'left': 'right', 'right': 'le
 PANEL_WIDTH = 440
 
 
+# ---------------------------------------------------------------------
+# Theme: identical look on macOS, Linux and Windows.
+# The platform's native style (macOS Aqua, GTK/Breeze on Ubuntu, ...) interprets a custom
+# palette differently, so the cross-platform "Fusion" style is used everywhere together with
+# a complete dark palette (including disabled colours) and one application-wide stylesheet.
+# ---------------------------------------------------------------------
+ACCENT = "#3d8ee8"
+
+
+def dark_palette():
+    p = QPalette()
+    roles = {
+        QPalette.Window: (30, 30, 30), QPalette.WindowText: (235, 235, 235),
+        QPalette.Base: (43, 43, 43), QPalette.AlternateBase: (53, 53, 53),
+        QPalette.ToolTipBase: (58, 58, 58), QPalette.ToolTipText: (235, 235, 235),
+        QPalette.Text: (235, 235, 235), QPalette.PlaceholderText: (130, 130, 130),
+        QPalette.Button: (58, 58, 58), QPalette.ButtonText: (235, 235, 235),
+        QPalette.BrightText: (255, 80, 80), QPalette.Link: (61, 142, 232),
+        QPalette.Highlight: (61, 142, 232), QPalette.HighlightedText: (255, 255, 255),
+        QPalette.Light: (75, 75, 75), QPalette.Midlight: (62, 62, 62),
+        QPalette.Mid: (45, 45, 45), QPalette.Dark: (20, 20, 20), QPalette.Shadow: (0, 0, 0),
+    }
+    for role, rgb in roles.items():
+        p.setColor(role, QColor(*rgb))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        p.setColor(QPalette.Disabled, role, QColor(120, 120, 120))
+    p.setColor(QPalette.Disabled, QPalette.Base, QColor(36, 36, 36))
+    p.setColor(QPalette.Disabled, QPalette.Button, QColor(42, 42, 42))
+    p.setColor(QPalette.Disabled, QPalette.Highlight, QColor(80, 80, 80))
+    return p
+
+
+APP_STYLESHEET = f"""
+QGroupBox {{
+    font-weight: bold;
+    border: 2px solid #555555;
+    border-radius: 5px;
+    margin-top: 10px;
+    padding-top: 10px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 5px 0 5px;
+}}
+QLineEdit {{
+    background-color: #2b2b2b;
+    border: 1px solid #555555;
+    border-radius: 3px;
+    padding: 2px 5px;
+    color: #ebebeb;
+    selection-background-color: {ACCENT};
+}}
+QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
+QLineEdit:disabled {{ background-color: #242424; border-color: #3a3a3a; color: #6e6e6e; }}
+QPushButton {{
+    background-color: #3a3a3a;
+    border: 1px solid #5a5a5a;
+    border-radius: 4px;
+    padding: 4px 10px;
+    color: #ebebeb;
+}}
+QPushButton:hover {{ background-color: #464646; border-color: #6a6a6a; }}
+QPushButton:pressed {{ background-color: #2c2c2c; }}
+QPushButton:disabled {{ background-color: #2c2c2c; border-color: #3a3a3a; color: #6e6e6e; }}
+QToolButton {{
+    background-color: #3a3a3a;
+    border: 1px solid #5a5a5a;
+    border-radius: 3px;
+    color: #ebebeb;
+    padding: 0px;
+}}
+QToolButton:hover {{ background-color: #464646; }}
+QToolButton:pressed {{ background-color: #2c2c2c; }}
+QToolButton:disabled {{ background-color: #2c2c2c; border-color: #3a3a3a; color: #6e6e6e; }}
+QSlider::groove:horizontal {{ height: 4px; background: #4a4a4a; border-radius: 2px; }}
+QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
+QSlider::add-page:horizontal {{ background: #4a4a4a; border-radius: 2px; }}
+QSlider::handle:horizontal {{
+    background: #d6d6d6;
+    border: 1px solid #5c5c5c;
+    width: 14px;
+    height: 14px;
+    margin: -6px 0;
+    border-radius: 8px;
+}}
+QSlider::handle:horizontal:hover {{ background: #ffffff; }}
+QSlider::sub-page:horizontal:disabled {{ background: #555555; }}
+QSlider::handle:horizontal:disabled {{ background: #6e6e6e; border-color: #444444; }}
+QToolTip {{ color: #ebebeb; background-color: #3a3a3a; border: 1px solid #5a5a5a; }}
+"""
+
+
+def apply_theme(app):
+    """Apply the same Fusion + dark theme on every platform (idempotent)."""
+    if app is None or app.property("tiffalign_theme"):
+        return
+    app.setStyle(QStyleFactory.create("Fusion"))
+    app.setPalette(dark_palette())
+    app.setStyleSheet(APP_STYLESHEET)
+    app.setProperty("tiffalign_theme", True)
+
+
+
 class NoWheelSlider(QSlider):
     """Slider that ignores the mouse wheel / trackpad scroll and resets on double-click.
 
@@ -774,6 +891,8 @@ class AlignGUI(QWidget):
         self._crop_patches = []
         self._imaged_masks = None
         self._crop_is_auto = False      # True while the crop comes from Auto Detect Crop
+        self._kept_state = None         # alignment kept while mean frames are recomputed
+        self._loaded_n_avg = None       # averaging depth of the currently loaded mean frames
         self._auto_crop_timer = QTimer(self)
         self._auto_crop_timer.setSingleShot(True)
         self._auto_crop_timer.setInterval(250)
@@ -804,6 +923,15 @@ class AlignGUI(QWidget):
         self.folder_label.setWordWrap(True)
         self.folder_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
         data_form.addRow(self.folder_label)
+        self.n_avg_input = QLineEdit(str(DEFAULT_N_AVG))
+        self.n_avg_input.setValidator(QIntValidator(1, 10_000_000, self))   # whole numbers >= 1
+        self.n_avg_input.setToolTip(
+            "Number of frames from the start of each session averaged into the mean frame used "
+            "for display, alignment and auto-crop (1 = first frame only).\n"
+            "Press Enter or leave the box to apply; the mean frames are recomputed and the "
+            "current alignment is kept.")
+        self.n_avg_input.editingFinished.connect(self.change_n_averaged)
+        data_form.addRow("Frames to average:", self.n_avg_input)
         self.ref_selector = QComboBox()
         self.ref_selector.currentIndexChanged.connect(self.change_reference)
         data_form.addRow("Reference session:", self.ref_selector)
@@ -821,10 +949,8 @@ class AlignGUI(QWidget):
             slider = NoWheelSlider(Qt.Horizontal, default_value=init)
             slider.setRange(mn, mx)
             slider.setValue(init)
-            slider.setStyleSheet(self._slider_style())
             edit = QLineEdit(self._fmt(key, init))
             edit.setFixedWidth(64)
-            edit.setStyleSheet(self._lineedit_style())
             slider.valueChanged.connect(lambda v, k=key: self.slider_changed(k, v))
             edit.editingFinished.connect(lambda k=key: self.text_input_changed(k))
             manual_grid.addWidget(QLabel(name), row, 0)
@@ -909,10 +1035,8 @@ class AlignGUI(QWidget):
         for row, key in enumerate(CROP_SIDES, start=1):
             slider = NoWheelSlider(Qt.Horizontal, default_value=0)
             slider.setRange(0, 0)          # real range is set once data is loaded
-            slider.setStyleSheet(self._slider_style())
             edit = QLineEdit("0")
             edit.setFixedWidth(64)
-            edit.setStyleSheet(self._lineedit_style())
             slider.valueChanged.connect(lambda v, k=key: self.crop_slider_changed(k, v))
             edit.editingFinished.connect(lambda k=key: self.crop_text_changed(k))
             crop_layout.addWidget(QLabel(key.capitalize()), row, 0)
@@ -1006,22 +1130,7 @@ class AlignGUI(QWidget):
 
     # ------------------- Style helpers -------------------
     def _group(self, title):
-        g = QGroupBox(title)
-        g.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                border: 2px solid #555555;
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-            }
-        """)
-        return g
+        return QGroupBox(title)   # styled by APP_STYLESHEET
 
     @staticmethod
     def _with_step_buttons(slider):
@@ -1046,31 +1155,6 @@ class AlignGUI(QWidget):
                 row.addWidget(btn)
         return row
 
-    @staticmethod
-    def _slider_style():
-        return """
-            QSlider::handle:horizontal {
-                background: #aaaaaa;
-                border: 2px solid #5c5c5c;
-                width: 10px;
-                height: 10px;
-                margin: -7px 0;
-                border-radius: 7px;
-            }
-        """
-
-    @staticmethod
-    def _lineedit_style():
-        return """
-            QLineEdit {
-                background-color: #2b2b2b;
-                border: 1px solid #555555;
-                border-radius: 3px;
-                padding: 2px 5px;
-                color: white;
-            }
-            QLineEdit:focus { border: 1px solid #0078d4; }
-        """
 
     def center_window(self):
         screen = QApplication.primaryScreen().availableGeometry()
@@ -1080,18 +1164,8 @@ class AlignGUI(QWidget):
                          screen.y() + (screen.height() - h) // 2, w, h)
 
     def set_dark_theme(self):
-        palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(30, 30, 30))
-        palette.setColor(QPalette.WindowText, Qt.white)
-        palette.setColor(QPalette.Base, QColor(25, 25, 25))
-        palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-        palette.setColor(QPalette.ToolTipBase, Qt.white)
-        palette.setColor(QPalette.ToolTipText, Qt.white)
-        palette.setColor(QPalette.Text, Qt.white)
-        palette.setColor(QPalette.Button, QColor(45, 45, 45))
-        palette.setColor(QPalette.ButtonText, Qt.white)
-        palette.setColor(QPalette.BrightText, Qt.red)
-        self.setPalette(palette)
+        apply_theme(QApplication.instance())
+        self.setPalette(dark_palette())
 
     # ------------------- Slider handling -------------------
     @staticmethod
@@ -1154,6 +1228,7 @@ class AlignGUI(QWidget):
         """Disable inputs while a background job runs (and data-dependent inputs until data is loaded)."""
         self.folder_button.setEnabled(not busy)
         self.exten_selector.setEnabled(not busy)
+        self.n_avg_input.setEnabled(not busy)
         has_data = self.mean_frames is not None and not busy
         for w in (self.ref_selector, self.session_selector, self.manual_group, self.auto_group,
                   self.correction_group, self.crop_group, self.save_group):
@@ -1314,7 +1389,7 @@ class AlignGUI(QWidget):
 
     def load_data(self):
         self._set_output_dir(self.folderpath)
-        self.n_frames_averaged = 100
+        self.n_frames_averaged = self._n_avg_value()
         self.pickle_path = self.folderpath / 'mean_frames.pkl'
         self.params_path = self.folderpath / 'params_all.pkl'
 
@@ -1331,14 +1406,40 @@ class AlignGUI(QWidget):
                     self.detected_dtype = data.get('detected_dtype', np.uint16)
                     self.finish_data_loading()
                     return
-                print("Cached mean frames do not match the folder contents, recomputing ---")
+                print("Cached mean frames do not match the folder contents or averaging "
+                      "settings, recomputing ---")
             except Exception as e:
                 print(f"Error loading pickle: {e}")
         print("Computing and saving mean frames ---")
         self.start_background_loading()
 
+    def _n_avg_value(self):
+        """Frames-to-average from the text box (>= 1); invalid text falls back to the last value."""
+        try:
+            n = max(1, int(self.n_avg_input.text()))
+        except ValueError:
+            n = self._loaded_n_avg or DEFAULT_N_AVG
+        self.n_avg_input.setText(str(n))
+        return n
+
+    def change_n_averaged(self):
+        """Recompute the mean frames when the averaging depth changes (alignment is kept)."""
+        n = self._n_avg_value()
+        if self.mean_frames is None or n == self._loaded_n_avg:
+            return
+        self._kept_state = {
+            'n_sessions': self.n_sessions, 'mean_frames': self.mean_frames,
+            'n_avg': self._loaded_n_avg, 'params_all': copy.deepcopy(self.params_all),
+            'ref_idx': self.ref_idx, 'session_idx': self.session_idx,
+            'crop': self.get_crop_params(), 'crop_is_auto': self._crop_is_auto,
+        }
+        self.n_frames_averaged = n
+        self.start_background_loading()
+
     def _cache_is_valid(self, data):
         if data.get('exten', self.exten) != self.exten:
+            return False
+        if data.get('n_frames_averaged', 100) != self.n_frames_averaged:   # old caches used 100
             return False
         files = find_files(self.folderpath, self.exten)
         if 'files' in data:
@@ -1356,6 +1457,17 @@ class AlignGUI(QWidget):
 
     def on_loading_finished(self, result):
         if result is None:
+            kept = self._kept_state
+            if kept is not None:
+                # Recomputing failed or was interrupted: go back to the previous mean frames.
+                msg = self.status_label.text()
+                self.progress_bar.setVisible(False)
+                self.mean_frames = kept['mean_frames']
+                self.n_frames_averaged = kept['n_avg']
+                self.n_avg_input.setText(str(kept['n_avg']))
+                self.finish_data_loading()
+                self.status_label.setText(f"{msg} (kept previous mean frames)")
+                return
             self._end_progress(self.status_label.text())   # keep the thread's error message
             return
         self.progress_bar.setVisible(False)
@@ -1373,6 +1485,32 @@ class AlignGUI(QWidget):
         self.finish_data_loading()
 
     def finish_data_loading(self):
+        self._loaded_n_avg = self.n_frames_averaged
+        kept = self._kept_state
+        self._kept_state = None
+        if kept is not None and kept['n_sessions'] == self.n_sessions:
+            # Mean frames were only recomputed with a different averaging depth:
+            # keep the current (possibly unsaved) alignment, reference, session and crop.
+            self.params_all = kept['params_all']
+            self.ref_idx = kept['ref_idx']
+            self._imaged_masks = None
+            self._ref_artist = None
+            self.set_busy(False)
+            self.ref_selector.blockSignals(True)
+            self.ref_selector.setCurrentIndex(self.ref_idx)
+            self.ref_selector.blockSignals(False)
+            crop_auto = kept['crop_is_auto']
+            self._populate_moving_selector(keep=kept['session_idx'])
+            self._set_crop(*kept['crop'])
+            self._crop_is_auto = crop_auto
+            if crop_auto and self.crop_enable_checkbox.isChecked():
+                self.auto_detect_crop(quiet=True)   # dark-border detection uses the new means
+            self.update_image()
+            self.status_label.setText(
+                f"Mean frames recomputed from the first {self.n_frames_averaged:,} frame(s) of "
+                f"each session; alignment kept.")
+            return
+
         self.params_all = {
             'reference_session': 0,
             'sessions': {i: default_params() for i in range(self.n_sessions)},
@@ -1728,7 +1866,11 @@ class AlignGUI(QWidget):
 
 # ------------------- Run -------------------
 if __name__ == '__main__':
+    # Consistent sizing on high-DPI Linux/Windows displays (automatic on macOS).
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
+    apply_theme(app)
     window = AlignGUI()
     window.show()
     sys.exit(app.exec_())

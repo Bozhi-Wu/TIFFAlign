@@ -13,7 +13,7 @@ Although many excellent automated motion correction algorithms exist, they are g
 ## Features
 
 - Supports both `.sbx` and `.tiff` files
-- Compute **mean frames** for the first 100 frames of each session (cached with pickle for faster reloads)
+- Compute **mean frames** from the first N frames of each session (default 100, adjustable down to 1 = first frame only; cached with pickle for faster reloads)
 - Select any session as the **reference session**
 - Side-by-side layout: **live overlay preview** on the left, all controls on the right
 - Interactive controls for X shift, Y shift, rotation, scaling and alpha (transparency)
@@ -28,7 +28,7 @@ Although many excellent automated motion correction algorithms exist, they are g
   - Fast, memory-bounded, multi-threaded saving that handles very large recordings (hundreds of GB)
   - Progress bar with **estimated time left**, **cancel** at any time
   - Choose the **output folder**; free disk space is checked before writing starts
-- Dark theme interface
+- Dark theme interface that looks the same on **macOS, Linux and Windows**
 
 
 ## Requirements and Installation
@@ -54,9 +54,10 @@ conda install pyqt=5 numpy=1.24 scipy=1.14 tifffile=2023 matplotlib -c conda-for
 
 ## Usage
 
-Run the GUI:
+Run the GUI from the activated environment:
 
 ```bash
+conda activate tiffalign
 python TIFFAlign.py
 ```
 
@@ -67,8 +68,11 @@ For long saves on macOS, you can prevent the computer from sleeping with `caffei
    - The files can exist in subfolders, as `rglob` is used to find them.
    - For the sessions to be concatenated in the correct order, name the files so that they sort correctly with Python's `sorted` function (e.g., by adding leading numbers like 000, 001, etc.).
    - For `.sbx` files, the corresponding `.mat` metadata files are also required.
-   - The first time a folder is opened, the mean of the first 100 frames of each session is computed and cached in `mean_frames.pkl`. The cache is recomputed automatically if the files in the folder (or the selected extension) change.
-   - Previously exported files (`tiff_aligned.tiff`, `tiff_manual_aligned.tiff`) are never treated as input sessions.
+   - The first time a folder is opened, the mean of the first N frames of each session is computed and cached in `mean_frames.pkl`. These mean frames are used for the preview, auto alignment and auto crop (the exported TIFF always contains every frame).
+   - N is typed into the **Frames to average** box (whole number, default 100; 1 = first frame only). It can be set before selecting the folder. If a session has fewer than N frames, all of its frames are used.
+   - The cache is recomputed automatically if the files in the folder, the selected extension, or N change.
+   - Changing **Frames to average** after a folder is loaded (press Enter or leave the box) recomputes the mean frames and keeps the current alignment, reference/moving session and crop. Averaging is done in chunks, so large values do not require loading all those frames into memory.
+   - A previously exported `tiff_aligned.tiff` is never treated as an input session.
    - If there is an existing alignment parameter file `params_all.pkl` in the folder, it is loaded automatically.
 3. Pick a **Reference Session** and a **Moving Session**.
    - The reference session is shown in grayscale, while the moving session is overlaid using the *inferno* colormap.
