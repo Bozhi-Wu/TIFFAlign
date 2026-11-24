@@ -132,4 +132,6 @@ For long saves on macOS, you can prevent the computer from sleeping with `caffei
 
 If you find **TIFFAlign** helpful in your research, please consider citing it as follows:
 
-- Wu, B., & Josselyn, S. (2025). Bozhi-Wu/TIFFAlign (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.17499330
+- Wu, B., & Josselyn, S. (2026). Bozhi-Wu/TIFFAlign. Zenodo. https://doi.org/10.5281/zenodo.17499329
+
+This DOI always resolves to the latest release. To cite the exact version you used, see the version-specific DOIs on the [Zenodo record](https://doi.org/10.5281/zenodo.17499329).
